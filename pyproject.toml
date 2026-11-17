@@ -1,0 +1,54 @@
+[project]
+name = "bed"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+  "pydantic>=2",
+  "pyyaml",
+  "httpx",
+  "pyjwt[crypto]",
+  "croniter",
+]
+
+[project.optional-dependencies]
+aws = ["boto3"]
+worker = ["strands-agents", "bedrock-agentcore"]
+
+[project.scripts]
+bed = "bed.cli:main"
+
+[project.entry-points."bed.vcs"]
+github = "bed.connectors.github:create"
+gitlab = "bed.connectors.gitlab:create"
+
+[project.entry-points."bed.tracker"]
+linear = "bed.connectors.linear:create"
+jira = "bed.connectors.jira:create"
+
+[project.entry-points."bed.notifier"]
+slack = "bed.connectors.slack:create"
+
+[dependency-groups]
+dev = ["pytest", "ruff", "respx", "moto[dynamodb,sqs,secretsmanager]"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/bed"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["tests"]
+filterwarnings = ["ignore::DeprecationWarning:bedrock_agentcore.*"]
+
+[tool.ruff]
+line-length = 110
+target-version = "py312"
+
+[tool.ruff.lint]
+ignore = ["BLE001"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["C408"]

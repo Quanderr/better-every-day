@@ -1,0 +1,103 @@
+from datetime import datetime, timedelta
+from typing import Literal, Protocol
+
+from pydantic import BaseModel
+
+from bed.core.models import FileChange, Finding, RunRecord, WorkerInput, WorkerResult
+
+
+class VcsError(Exception):
+    def __init__(self, status: int, body: str):
+        self.status = status
+        self.body = body
+        super().__init__(f"VCS API {status}: {body[:500]}")
+
+
+class TrackerError(Exception):
+    pass
+
+
+class BotPr(BaseModel):
+    number: int
+    url: str
+    state: Literal["open", "merged", "closed"]
+    branch: str = ""
+    files: list[str] = []
+
+
+class ReadToken(BaseModel):
+    token: str
+    revoke_id: str | None = None
+
+
+class TicketRef(BaseModel):
+    id: str
+    url: str
+
+
+class PrRef(BaseModel):
+    number: int
+    url: str
+
+
+class VcsConnector(Protocol):
+    def clone_url(self, repo: str) -> str: ...
+    def read_token(self, repo: str) -> ReadToken: ...
+    def revoke_read_token(self, repo: str, revoke_id: str) -> None: ...
+    def read_file(self, repo: str, ref: str, path: str) -> str | None: ...
+    def list_bot_prs(self, repo: str) -> list[BotPr]: ...
+    def close_comment(self, repo: str, number: int) -> str: ...
+    def get_pr(self, repo: str, number: int) -> BotPr: ...
+    def add_labels(self, repo: str, number: int, labels: list[str]) -> None: ...
+    def is_ancestor(self, repo: str, sha: str, branch: str) -> bool: ...
+    def find_branch(self, repo: str, branch: str) -> str | None: ...
+    def push_branch(self, repo: str, branch: str, base_sha: str, message: str, changes: list[FileChange]) -> str: ...
+    def find_pr(self, repo: str, branch: str) -> PrRef | None: ...
+    def open_pr(self, repo: str, base_branch: str, branch: str, title: str, body: str, labels: list[str]) -> PrRef: ...
+
+
+class TrackerConnector(Protocol):
+    def find_ticket(self, project: str, fingerprint: str) -> TicketRef | None: ...
+    def create_ticket(self, project: str, title: str, body: str, fingerprint: str) -> TicketRef: ...
+    def link_pr(self, ticket_id: str, pr_url: str, title: str) -> None: ...
+
+
+class Summary(BaseModel):
+    opened: list[Finding] = []
+    waiting: list[Finding] = []
+    skipped: list[RunRecord] = []
+    failed: list[RunRecord] = []
+    stuck: list[Finding] = []
+
+    def is_empty(self) -> bool:
+        return not (self.opened or self.waiting or self.skipped or self.failed or self.stuck)
+
+
+class NotifierConnector(Protocol):
+    def send(self, summary: Summary) -> None: ...
+
+
+class AgentRuntime(Protocol):
+    def start(self, session_id: str, payload: WorkerInput) -> None: ...
+
+
+class ResultSink(Protocol):
+    def emit(self, result: WorkerResult) -> None: ...
+
+
+class SecretStore(Protocol):
+    def get(self, name: str) -> dict[str, str]: ...
+
+
+class StateStore(Protocol):
+    def put_run(self, run: RunRecord) -> None: ...
+    def get_run(self, repo: str, run_id: str) -> RunRecord | None: ...
+    def list_runs(self, repo: str, since: datetime) -> list[RunRecord]: ...
+    def get_finding(self, repo: str, fingerprint: str) -> Finding | None: ...
+    def put_finding(self, finding: Finding) -> None: ...
+    def list_findings(self, repo: str) -> list[Finding]: ...
+    def get_lessons(self, repo: str) -> str: ...
+    def put_lessons(self, repo: str, text: str) -> None: ...
+    def get_meta(self, key: str) -> str | None: ...
+    def put_meta(self, key: str, value: str) -> None: ...
+    def try_lease(self, key: str, now: datetime, ttl: timedelta) -> bool: ...

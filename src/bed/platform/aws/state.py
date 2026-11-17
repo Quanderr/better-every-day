@@ -1,0 +1,85 @@
+from datetime import datetime, timedelta
+from typing import Any
+
+import boto3
+from boto3.dynamodb.conditions import Key
+from botocore.exceptions import ClientError
+
+from bed.core.models import Finding, RunRecord
+
+META_PK = "META"
+LEASE_PK = "LEASE"
+
+
+def _repo_pk(repo: str) -> str:
+    return f"REPO#{repo}"
+
+
+class DynamoStateStore:
+    def __init__(self, table_name: str):
+        self.table = boto3.resource("dynamodb").Table(table_name)
+
+    def _put(self, pk: str, sk: str, data: str) -> None:
+        self.table.put_item(Item={"pk": pk, "sk": sk, "data": data})
+
+    def _get(self, pk: str, sk: str) -> str | None:
+        item = self.table.get_item(Key={"pk": pk, "sk": sk}, ConsistentRead=True).get("Item")
+        return item["data"] if item else None
+
+    def _query(self, condition: Any) -> list[str]:
+        items: list[str] = []
+        kwargs: dict[str, Any] = {"KeyConditionExpression": condition, "ConsistentRead": True}
+        while True:
+            page = self.table.query(**kwargs)
+            items.extend(i["data"] for i in page["Items"])
+            if "LastEvaluatedKey" not in page:
+                return items
+            kwargs["ExclusiveStartKey"] = page["LastEvaluatedKey"]
+
+    def put_run(self, run: RunRecord) -> None:
+        self._put(_repo_pk(run.repo), f"RUN#{run.run_id}", run.model_dump_json())
+
+    def get_run(self, repo: str, run_id: str) -> RunRecord | None:
+        data = self._get(_repo_pk(repo), f"RUN#{run_id}")
+        return RunRecord.model_validate_json(data) if data else None
+
+    def list_runs(self, repo: str, since: datetime) -> list[RunRecord]:
+        lower = f"RUN#{since.strftime('%Y%m%dT%H%M%SZ')}"
+        condition = Key("pk").eq(_repo_pk(repo)) & Key("sk").between(lower, "RUN#~")
+        return [RunRecord.model_validate_json(d) for d in self._query(condition)]
+
+    def get_finding(self, repo: str, fingerprint: str) -> Finding | None:
+        data = self._get(_repo_pk(repo), f"FP#{fingerprint}")
+        return Finding.model_validate_json(data) if data else None
+
+    def put_finding(self, finding: Finding) -> None:
+        self._put(_repo_pk(finding.repo), f"FP#{finding.fingerprint}", finding.model_dump_json())
+
+    def list_findings(self, repo: str) -> list[Finding]:
+        condition = Key("pk").eq(_repo_pk(repo)) & Key("sk").begins_with("FP#")
+        return [Finding.model_validate_json(d) for d in self._query(condition)]
+
+    def get_lessons(self, repo: str) -> str:
+        return self._get(_repo_pk(repo), "LESSONS") or ""
+
+    def put_lessons(self, repo: str, text: str) -> None:
+        self._put(_repo_pk(repo), "LESSONS", text)
+
+    def get_meta(self, key: str) -> str | None:
+        return self._get(META_PK, key)
+
+    def put_meta(self, key: str, value: str) -> None:
+        self._put(META_PK, key, value)
+
+    def try_lease(self, key: str, now: datetime, ttl: timedelta) -> bool:
+        try:
+            self.table.put_item(
+                Item={"pk": LEASE_PK, "sk": key, "expires_at": int((now + ttl).timestamp())},
+                ConditionExpression="attribute_not_exists(pk) OR expires_at < :now",
+                ExpressionAttributeValues={":now": int(now.timestamp())},
+            )
+        except ClientError as e:
+            if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
+                return False
+            raise
+        return True

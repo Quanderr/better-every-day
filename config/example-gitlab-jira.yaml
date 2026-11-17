@@ -1,0 +1,36 @@
+model:
+  provider: bedrock
+  id: us.anthropic.claude-opus-4-1-20250805-v1:0
+connectors:
+  vcs:
+    main-gitlab:
+      type: gitlab
+      auth_secret: bed/gitlab
+      api_url: https://gitlab.com/api/v4
+  tracker:
+    main-jira:
+      type: jira
+      auth_secret: bed/jira
+      url: https://acme.atlassian.net
+      issue_type: Task
+  notifier:
+    team-slack:
+      type: slack
+      auth_secret: bed/slack
+      channel: "#better-every-day"
+notifications:
+  notifier: team-slack
+  summary_schedule: "0 8 * * 1-5"
+  timezone: Europe/Warsaw
+defaults:
+  categories: [bug, error-handling, test-gap]
+repos:
+  - name: acme/platform/api
+    vcs: main-gitlab
+    tracker: main-jira
+    tracker_project: API
+    schedule: "0 5 * * 1-5"
+    timezone: Europe/Warsaw
+    verify:
+      install: npm ci
+      commands: [npm test]

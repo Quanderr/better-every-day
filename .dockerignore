@@ -1,0 +1,8 @@
+.venv
+.scratchpad
+.superpowers
+.pytest_cache
+.ruff_cache
+**/__pycache__
+infra
+tests

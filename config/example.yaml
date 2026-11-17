@@ -1,0 +1,55 @@
+model:
+  provider: bedrock
+  id: us.anthropic.claude-opus-4-1-20250805-v1:0
+connectors:
+  vcs:
+    main-github:
+      type: github
+      auth_secret: bed/github-app
+  tracker:
+    main-linear:
+      type: linear
+      auth_secret: bed/linear
+  notifier:
+    team-slack:
+      type: slack
+      auth_secret: bed/slack
+      channel: "#better-every-day"
+notifications:
+  notifier: team-slack
+  summary_schedule: "0 8 * * 1-5"
+  timezone: Europe/Warsaw
+defaults:
+  prompt: |
+    Prefer correctness bugs over style.
+  categories: [bug, error-handling, test-gap, dead-code, perf, docs]
+  limits:
+    max_prs_per_run: 2
+    max_open_bot_prs: 5
+    max_diff_lines: 150
+    max_files: 5
+    token_budget: 2000000
+    timeout_minutes: 60
+repos:
+  - name: acme/web
+    vcs: main-github
+    tracker: main-linear
+    tracker_project: WEB
+    schedule: "0 5 * * 1-5"
+    timezone: Europe/Warsaw
+    base_branch: main
+    verify:
+      install: pnpm install --frozen-lockfile
+      commands: [pnpm lint, pnpm test]
+    exclude_paths: ["**/generated/**", "infra/**"]
+    prompt: |
+      Focus on the checkout module.
+  - name: acme/api
+    vcs: main-github
+    tracker: main-linear
+    tracker_project: API
+    schedule: "0 5 * * 1-5"
+    timezone: Europe/Warsaw
+    base_branch: main
+    verify:
+      mode: ci
