@@ -6,3 +6,6 @@
 **/__pycache__
 infra
 tests
+*.pem
+tokens.md
+.tools

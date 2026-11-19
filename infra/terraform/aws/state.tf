@@ -90,7 +90,8 @@ resource "aws_dynamodb_table" "state" {
 }
 
 resource "aws_sqs_queue" "results_dlq" {
-  name                      = "${var.name}-results-dlq"
+  name                      = "${var.name}-results-dlq.fifo"
+  fifo_queue                = true
   message_retention_seconds = 1209600
   sqs_managed_sse_enabled   = true
 }
@@ -112,10 +113,12 @@ resource "aws_cloudwatch_metric_alarm" "results_dlq" {
 }
 
 resource "aws_sqs_queue" "results" {
-  name                       = "${var.name}-results"
-  visibility_timeout_seconds = 5400
-  message_retention_seconds  = 345600
-  sqs_managed_sse_enabled    = true
+  name                        = "${var.name}-results.fifo"
+  fifo_queue                  = true
+  content_based_deduplication = true
+  visibility_timeout_seconds  = 5400
+  message_retention_seconds   = 345600
+  sqs_managed_sse_enabled     = true
 
   redrive_policy = jsonencode({
     deadLetterTargetArn = aws_sqs_queue.results_dlq.arn

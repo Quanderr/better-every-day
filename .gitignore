@@ -5,3 +5,10 @@ __pycache__/
 .superpowers/
 infra/terraform/**/.terraform/
 *.tfstate*
+*.tfplan
+*.pem
+tokens.md
+.tools/
+config/model-simulation.yaml
+infra/terraform/aws/model-simulation.tfvars
+docs/model-simulation-deployment.md

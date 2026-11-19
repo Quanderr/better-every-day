@@ -1,5 +1,5 @@
 locals {
-  allowed_domains = distinct(concat([
+  configured_allowed_domains = distinct(concat([
     "github.com", ".github.com", ".githubusercontent.com",
     "gitlab.com",
     ".npmjs.org", ".yarnpkg.com",
@@ -12,6 +12,12 @@ locals {
     "go.dev", "dl.google.com",
     "cache.ruby-lang.org",
   ], var.extra_allowed_domains))
+
+  # A leading dot already includes the bare domain. AWS rejects both together.
+  allowed_domains = [
+    for domain in local.configured_allowed_domains : domain
+    if startswith(domain, ".") || !contains(local.configured_allowed_domains, ".${domain}")
+  ]
 
   dns_allowed_domains = distinct(concat(
     [for d in local.allowed_domains : startswith(d, ".") ? "*${d}" : d],

@@ -28,3 +28,22 @@ def test_round_trip(queue):
 def test_oversize_raises(queue):
     with pytest.raises(ValueError, match="too large"):
         SqsSink(queue).emit(result("x" * 250_000))
+
+
+@mock_aws
+def test_fifo_results_share_one_group_and_deduplicate_retries():
+    client = boto3.client("sqs")
+    queue = client.create_queue(QueueName="results.fifo", Attributes={
+        "FifoQueue": "true", "ContentBasedDeduplication": "true",
+    })["QueueUrl"]
+    sink = SqsSink(queue)
+    first = result()
+    second = first.model_copy(update={"run_id": "another-run"})
+    sink.emit(first)
+    sink.emit(first)
+    sink.emit(second)
+    messages = client.receive_message(QueueUrl=queue, MaxNumberOfMessages=10,
+        MessageSystemAttributeNames=["MessageGroupId", "MessageDeduplicationId"])["Messages"]
+    assert len(messages) == 2
+    assert {m["Attributes"]["MessageGroupId"] for m in messages} == {"results"}
+    assert {parse_result(m["Body"]).run_id for m in messages} == {first.run_id, second.run_id}

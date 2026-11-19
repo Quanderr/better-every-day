@@ -47,14 +47,13 @@ resource "aws_lambda_function" "schedule" {
 }
 
 resource "aws_lambda_function" "result" {
-  function_name                  = "${var.name}-result"
-  role                           = aws_iam_role.control.arn
-  reserved_concurrent_executions = 1
-  package_type                   = "Image"
-  image_uri                      = "${aws_ecr_repository.control.repository_url}:${var.control_image_tag}"
-  architectures                  = ["arm64"]
-  timeout                        = 900
-  memory_size                    = 1024
+  function_name = "${var.name}-result"
+  role          = aws_iam_role.control.arn
+  package_type  = "Image"
+  image_uri     = "${aws_ecr_repository.control.repository_url}:${var.control_image_tag}"
+  architectures = ["arm64"]
+  timeout       = 900
+  memory_size   = 1024
 
   image_config {
     command = [local.control_functions.result]
