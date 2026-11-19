@@ -98,7 +98,10 @@ class Workspace:
         env = {**self._base_env(), "NODE_ENV": "test", "CI": "1"}
         if self._mise:
             env["MISE_TRUSTED_CONFIG_PATHS"] = str(self.root)
-            return self._run(["mise", "exec", "--", "bash", "-lc", command], timeout_s, env=env)
+            env["MISE_IDIOMATIC_VERSION_FILE"] = "1"
+            env["MISE_IDIOMATIC_VERSION_FILE_ENABLE_TOOLS"] = "node,python,ruby,java,go"
+            # A login shell would overwrite the toolchain PATH set by mise exec.
+            return self._run(["mise", "exec", "--", "bash", "-c", command], timeout_s, env=env)
         return self._run(command, timeout_s, env=env)
 
     def exec_readonly(self, argv: list[str], timeout_s: int) -> CmdResult:

@@ -152,7 +152,8 @@ def test_install_toolchains_skipped_without_version_files(ws, monkeypatch):
     assert calls == []
 
 
-def test_install_toolchains_runs_mise_with_env(ws, monkeypatch):
+def test_install_toolchains_runs_mise_with_env(tmp_path, monkeypatch):
+    ws = Workspace(tmp_path)
     calls = []
 
     def fake_run(cmd, cwd, env, timeout_s):
@@ -167,7 +168,10 @@ def test_install_toolchains_runs_mise_with_env(ws, monkeypatch):
     assert env["MISE_PARANOID"] == "1" and env["MISE_IDIOMATIC_VERSION_FILE"] == "1"
     assert "BED_GIT_TOKEN" not in env
     ws.exec("true", 5)
-    assert calls[1][0][:3] == ["mise", "exec", "--"]
+    assert calls[1][0] == ["mise", "exec", "--", "bash", "-c", "true"]
+    exec_env = calls[1][1]
+    assert exec_env["MISE_IDIOMATIC_VERSION_FILE"] == env["MISE_IDIOMATIC_VERSION_FILE"]
+    assert exec_env["MISE_IDIOMATIC_VERSION_FILE_ENABLE_TOOLS"] == env["MISE_IDIOMATIC_VERSION_FILE_ENABLE_TOOLS"]
 
 
 def test_install_toolchains_failure_raises(ws, monkeypatch):
