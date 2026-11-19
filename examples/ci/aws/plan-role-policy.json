@@ -1,0 +1,71 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "TerraformState",
+      "Effect": "Allow",
+      "Action": ["s3:GetObject", "s3:ListBucket"],
+      "Resource": ["arn:aws:s3:::STATE_BUCKET", "arn:aws:s3:::STATE_BUCKET/*"]
+    },
+    {
+      "Sid": "ConfigBucket",
+      "Effect": "Allow",
+      "Action": [
+        "s3:ListBucket", "s3:GetBucket*", "s3:GetAccelerateConfiguration", "s3:GetLifecycleConfiguration",
+        "s3:GetReplicationConfiguration", "s3:GetEncryptionConfiguration", "s3:GetObject", "s3:GetObjectTagging"
+      ],
+      "Resource": ["arn:aws:s3:::better-every-day-config-*", "arn:aws:s3:::better-every-day-config-*/config.yaml"]
+    },
+    {
+      "Sid": "NetworkAndCompute",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:Describe*",
+        "network-firewall:Describe*", "network-firewall:List*",
+        "route53resolver:GetFirewallRuleGroup", "route53resolver:GetFirewallDomainList",
+        "route53resolver:GetFirewallRuleGroupAssociation", "route53resolver:GetFirewallRuleGroupPolicy",
+        "route53resolver:ListFirewallRules", "route53resolver:ListFirewallDomains",
+        "route53resolver:ListFirewallRuleGroupAssociations", "route53resolver:ListTagsForResource"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "AmiParameter",
+      "Effect": "Allow",
+      "Action": ["ssm:GetParameter", "ssm:GetParameters"],
+      "Resource": "arn:aws:ssm:*::parameter/aws/service/ami-amazon-linux-latest/*"
+    },
+    {
+      "Sid": "Iam",
+      "Effect": "Allow",
+      "Action": [
+        "iam:GetRole", "iam:GetRolePolicy", "iam:ListRolePolicies", "iam:ListAttachedRolePolicies",
+        "iam:ListInstanceProfilesForRole", "iam:GetInstanceProfile"
+      ],
+      "Resource": [
+        "arn:aws:iam::*:role/better-every-day-*",
+        "arn:aws:iam::*:instance-profile/better-every-day-*"
+      ]
+    },
+    {
+      "Sid": "ControlPlaneMetadata",
+      "Effect": "Allow",
+      "Action": [
+        "lambda:GetFunction", "lambda:GetFunctionConfiguration", "lambda:GetFunctionCodeSigningConfig",
+        "lambda:GetPolicy", "lambda:ListVersionsByFunction", "lambda:ListTags", "lambda:GetEventSourceMapping",
+        "lambda:ListEventSourceMappings", "lambda:GetFunctionConcurrency", "lambda:GetRuntimeManagementConfig",
+        "dynamodb:DescribeTable", "dynamodb:DescribeContinuousBackups", "dynamodb:DescribeTimeToLive",
+        "dynamodb:ListTagsOfResource",
+        "sqs:GetQueueAttributes", "sqs:GetQueueUrl", "sqs:ListQueueTags",
+        "ecr:DescribeRepositories", "ecr:ListTagsForResource", "ecr:GetLifecyclePolicy", "ecr:GetRepositoryPolicy",
+        "logs:DescribeLogGroups", "logs:ListTagsForResource", "logs:ListTagsLogGroup",
+        "cloudwatch:DescribeAlarms", "cloudwatch:ListTagsForResource",
+        "scheduler:GetSchedule", "scheduler:ListSchedules",
+        "bedrock-agentcore:GetAgentRuntime", "bedrock-agentcore:ListAgentRuntimes",
+        "bedrock-agentcore:ListAgentRuntimeVersions", "bedrock-agentcore:ListAgentRuntimeEndpoints",
+        "bedrock-agentcore:ListTagsForResource"
+      ],
+      "Resource": "*"
+    }
+  ]
+}

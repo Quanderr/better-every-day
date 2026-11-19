@@ -22,6 +22,7 @@ src/bed/platform/aws  DynamoDB, Secrets Manager, SQS, AgentCore, Lambda handlers
 docker/               worker and control images (linux/arm64)
 infra/terraform/aws   VPC, firewall or egress proxy, runtime, Lambdas, table, queue, schedules
 config/               example configurations (GitHub + Linear, GitLab + Jira)
+examples/ci/          copy-ready GitHub Actions and GitLab CI deploy pipelines
 ```
 
 ## Configuration
@@ -187,6 +188,54 @@ Restrict who can create AgentCore runtimes in PUBLIC network mode with the IAM c
 - Network mode: change `network_mode` and `terraform apply` with the same image tags. Run `terraform plan` first and read what it destroys; switching away from `firewall` deletes the Network Firewall and its log group. Not during a run.
 - Upgrading an existing deployment to network modes: run `terraform plan` with the default `network_mode` first. It should show the firewall, NAT gateway and related resources as moved (from `moved.tf`), not replaced, plus the Bedrock token alarm replaced by `<name>-bedrock-daily-cost`. Anything else being replaced is a reason to stop and check.
 - Code: ECR tags are immutable, so build and push both images under a **new** tag, then `terraform apply` with the new tags. Avoid deploying while a run is in progress; a result that arrives later is still processed.
+
+### CI/CD
+
+Copy-ready pipelines: `examples/ci/github/deploy.yml` (copy to `.github/workflows/deploy.yml`) and `examples/ci/gitlab/.gitlab-ci.yml` (copy to the repo root). Both do the same:
+
+| Trigger | Jobs |
+|---|---|
+| Pull/merge request | lint, tests, `bed validate`, `terraform fmt -check`, then a read-only `terraform plan` |
+| Push to the default branch | the same checks, then create the ECR repositories (targeted apply), build and push both arm64 images tagged with the commit SHA (skipped when that tag already exists), save a plan, and apply it after manual approval |
+
+The GitHub workflow pins every action to a commit SHA: `actions/checkout` v4, `astral-sh/setup-uv` v6, `hashicorp/setup-terraform` v3, `aws-actions/configure-aws-credentials` v4, `actions/upload-artifact` v4 and `actions/download-artifact` v4. Update them with Dependabot or Renovate rather than switching back to tags. Only the jobs that assume an AWS role get `id-token: write`.
+
+AWS access uses OIDC: no access keys are stored in CI. Terraform state goes to S3 with S3-native locking (Terraform >= 1.10); the pipelines write `infra/terraform/aws/backend.tf` with an empty `s3` backend unless you committed one. Plans run with `-lock=false` under the read-only role; the apply re-checks the saved plan against current state and fails if it is stale.
+
+The saved plan (`tfplan`) is uploaded as a pipeline artifact for 5 days so the approved apply uses exactly what was reviewed. A plan file holds planned values and prior state in plain text: account ID, ARNs and the full config. Keep the repository private (GitHub) or turn off public pipelines (GitLab: Settings → CI/CD → General pipelines), or anyone who can see the run can download it.
+
+`config_path` is passed relative to `infra/terraform/aws` (`../../../<BED_CONFIG_PATH>`), so the saved plan does not depend on the runner's checkout directory; on self-managed GitLab runners plan and apply can run in different build directories.
+
+The GitLab pipeline pins its tools as well: the Python and Docker images by digest, uv by version (`UV_VERSION`), and Terraform by version with the zip checked against HashiCorp's published `SHA256SUMS` (fetched from the same host, so it catches corruption and tampering in transit, not a compromised release server; add GPG verification of `SHA256SUMS.sig` if that matters to you). The GitHub workflow pins uv with `UV_VERSION` too. Update the digests and versions deliberately, together with the action SHAs.
+
+**One-time setup in AWS** (by hand or in your own bootstrap Terraform, before the first pipeline):
+1. An S3 bucket for state, versioned, with public access blocked.
+2. The connector secrets from Secrets.
+3. An IAM OIDC identity provider: `token.actions.githubusercontent.com` (GitHub) or `gitlab.com` / your GitLab host (GitLab), audience `sts.amazonaws.com`.
+4. A **plan role** with the policy in `examples/ci/aws/plan-role-policy.json`. Replace `STATE_BUCKET` with your state bucket and `better-every-day` with your `name` if you changed it. It allows only the Describe/List/Get calls Terraform needs to refresh this stack, plus reading the state and the config object; it deliberately cannot read DynamoDB items, SQS messages, log events, secrets or any other S3 object. If a plan fails with `AccessDenied` after a provider upgrade, add the single action named in the error. Do not use `ReadOnlyAccess`: pull and merge request plans run the branch's own code with this role (Terraform's `external` data source runs `bed validate` from the checkout, and a branch can add any data source), so anyone who can push a branch can use whatever the role can read. With this policy that is the stack's metadata and the Terraform state.
+5. A **deploy role** that can create everything in `infra/terraform/aws` (simplest: `AdministratorAccess`; scope it down once it works) plus read and write on the state bucket.
+6. Trust policies, with `Federated` set to the provider from step 3 and `"StringEquals": {"<provider>:aud": "sts.amazonaws.com"}`, and these `sub` conditions (`StringLike`):
+
+| | Plan role | Deploy role |
+|---|---|---|
+| GitHub (`token.actions.githubusercontent.com:sub`) | `repo:<owner>/<repo>:pull_request`, `repo:<owner>/<repo>:ref:refs/heads/main` | `repo:<owner>/<repo>:ref:refs/heads/main`, `repo:<owner>/<repo>:environment:production` |
+| GitLab (`gitlab.com:sub`) | `project_path:<group>/<project>:ref_type:branch:ref:*` | `project_path:<group>/<project>:ref_type:branch:ref:main` |
+
+On GitHub:
+- Protect `main` (Settings → Branches or Rulesets): require pull requests and block force pushes, because the deploy role trusts any workflow run on `main` without approval (the `images` job).
+- In the `production` environment, add required reviewers and set Deployment branches and tags to `main` only. Otherwise a workflow on any branch can use `environment: production`, and an approval would apply that branch's code with the deploy role.
+
+On GitLab, protect `main` so only maintainers can push to it, because the deploy role trusts any pipeline on that branch. The plan role trusts every branch (`ref:*`), which is why its policy must stay as narrow as step 4.
+
+**Commit your config** (no secrets in it) at the path you set as `BED_CONFIG_PATH`, for example `config/production.yaml`.
+
+**GitHub**: add repository variables (Settings → Secrets and variables → Actions → Variables): `AWS_REGION`, `AWS_PLAN_ROLE_ARN`, `AWS_DEPLOY_ROLE_ARN`, `TF_STATE_BUCKET`, `BED_CONFIG_PATH`, and optionally `TF_STATE_KEY` (default `better-every-day/terraform.tfstate`) and `BED_NETWORK_MODE` (default `firewall`). Create an environment named `production` with required reviewers; that is the approval gate. Images build on the `ubuntu-24.04-arm` hosted runner.
+
+**GitLab**: add CI/CD variables (Settings → CI/CD → Variables): `AWS_REGION`, `AWS_PLAN_ROLE_ARN`, `AWS_DEPLOY_ROLE_ARN`, `TF_STATE_BUCKET`, `BED_CONFIG_PATH`, and optionally `TF_STATE_KEY`, `BED_NETWORK_MODE`, `BED_NAME` (must match `name`, default `better-every-day`) and `ARM64_RUNNER_TAG` (default `saas-linux-small-arm64`, the GitLab.com arm64 runner; self-managed runners need an arm64 runner that allows Docker-in-Docker). The `apply` job is manual; that is the approval gate.
+
+**Other Terraform variables** (alarm topic, extra domains, cost alarm, prices): add them as `TF_VAR_<name>` to the workflow `env` block or the GitLab `variables` block.
+
+**Migrating a local-state deployment** to CI: add the same `backend.tf` locally and run `terraform -chdir=infra/terraform/aws init -migrate-state` with the same `-backend-config` values once, before the first pipeline; otherwise the pipeline starts from empty state and tries to create everything again.
 
 ### Teardown
 

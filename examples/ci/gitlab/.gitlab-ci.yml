@@ -1,0 +1,148 @@
+workflow:
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+stages:
+  - check
+  - plan
+  - build
+  - deploy
+
+variables:
+  TF_DIR: infra/terraform/aws
+  TF_IN_AUTOMATION: "1"
+  TF_INPUT: "0"
+  TF_VERSION: 1.15.8
+  UV_VERSION: 0.9.5
+  TF_STATE_KEY: better-every-day/terraform.tfstate
+  BED_NAME: better-every-day
+  BED_NETWORK_MODE: firewall
+  ARM64_RUNNER_TAG: saas-linux-small-arm64
+  TF_VAR_name: $BED_NAME
+  TF_VAR_region: $AWS_REGION
+  TF_VAR_config_path: ../../../$BED_CONFIG_PATH
+  TF_VAR_network_mode: $BED_NETWORK_MODE
+  TF_VAR_worker_image_tag: $CI_COMMIT_SHA
+  TF_VAR_control_image_tag: $CI_COMMIT_SHA
+
+.tools:
+  image: python:3.12-slim-bookworm@sha256:935c3c5b12357a7e10caa9c1e6ca5692344d97cf229832ef584be2cec9fc03df
+  before_script:
+    - apt-get update -qq && apt-get install -y -qq --no-install-recommends curl unzip git ca-certificates >/dev/null
+    - pip install -q "uv==$UV_VERSION"
+    - TF_ZIP="terraform_${TF_VERSION}_linux_$(dpkg --print-architecture).zip"
+    - curl -fsSL -o "/tmp/$TF_ZIP" "https://releases.hashicorp.com/terraform/${TF_VERSION}/${TF_ZIP}"
+    - curl -fsSL -o /tmp/tf.sums "https://releases.hashicorp.com/terraform/${TF_VERSION}/terraform_${TF_VERSION}_SHA256SUMS"
+    - (cd /tmp && grep " ${TF_ZIP}\$" tf.sums | sha256sum -c -)
+    - mv "/tmp/$TF_ZIP" /tmp/tf.zip
+    - unzip -q -o /tmp/tf.zip -d /usr/local/bin terraform
+
+.aws:
+  id_tokens:
+    AWS_ID_TOKEN:
+      aud: sts.amazonaws.com
+  variables:
+    AWS_WEB_IDENTITY_TOKEN_FILE: /tmp/aws-web-identity-token
+    AWS_ROLE_SESSION_NAME: gitlab-$CI_PIPELINE_ID-$CI_JOB_ID
+
+.terraform:
+  extends: [.tools, .aws]
+  script:
+    - printf '%s' "$AWS_ID_TOKEN" > "$AWS_WEB_IDENTITY_TOKEN_FILE"
+    - '[ -f "$TF_DIR/backend.tf" ] || printf "terraform {\n  backend \"s3\" {}\n}\n" > "$TF_DIR/backend.tf"'
+    - >-
+      terraform -chdir="$TF_DIR" init
+      -backend-config="bucket=$TF_STATE_BUCKET"
+      -backend-config="key=$TF_STATE_KEY"
+      -backend-config="region=$AWS_REGION"
+      -backend-config="use_lockfile=true"
+    - eval "$TF_COMMAND"
+
+check:
+  stage: check
+  extends: .tools
+  script:
+    - uv sync --all-extras --frozen
+    - uv run ruff check
+    - uv run pytest -q
+    - uv run bed validate "$BED_CONFIG_PATH"
+    - terraform fmt -check -recursive infra/terraform
+
+plan-mr:
+  stage: plan
+  extends: .terraform
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+  variables:
+    AWS_ROLE_ARN: $AWS_PLAN_ROLE_ARN
+    TF_COMMAND: terraform -chdir="$TF_DIR" plan -lock=false
+
+ecr:
+  stage: build
+  extends: .terraform
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+  resource_group: production
+  variables:
+    AWS_ROLE_ARN: $AWS_DEPLOY_ROLE_ARN
+    TF_COMMAND: terraform -chdir="$TF_DIR" apply -auto-approve -target=aws_ecr_repository.worker -target=aws_ecr_repository.control
+
+images:
+  stage: build
+  extends: .aws
+  needs: [ecr]
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+  tags: [$ARM64_RUNNER_TAG]
+  image: docker:27@sha256:aa3df78ecf320f5fafdce71c659f1629e96e9de0968305fe1de670e0ca9176ce
+  services:
+    - docker:27-dind@sha256:aa3df78ecf320f5fafdce71c659f1629e96e9de0968305fe1de670e0ca9176ce
+  variables:
+    AWS_ROLE_ARN: $AWS_DEPLOY_ROLE_ARN
+    DOCKER_TLS_CERTDIR: /certs
+  before_script:
+    - apk add --no-cache aws-cli >/dev/null
+  script:
+    - printf '%s' "$AWS_ID_TOKEN" > "$AWS_WEB_IDENTITY_TOKEN_FILE"
+    - REGISTRY="$(aws sts get-caller-identity --query Account --output text).dkr.ecr.$AWS_REGION.amazonaws.com"
+    - aws ecr get-login-password --region "$AWS_REGION" | docker login --username AWS --password-stdin "$REGISTRY"
+    - |
+      for kind in worker control; do
+        repo="$BED_NAME-$kind"
+        if aws ecr describe-images --region "$AWS_REGION" --repository-name "$repo" --image-ids imageTag="$CI_COMMIT_SHA" >/dev/null 2>&1; then
+          echo "$kind image $CI_COMMIT_SHA already pushed"
+          continue
+        fi
+        docker build --platform linux/arm64 -f "docker/$kind.Dockerfile" -t "$REGISTRY/$repo:$CI_COMMIT_SHA" .
+        docker push "$REGISTRY/$repo:$CI_COMMIT_SHA"
+      done
+
+plan:
+  stage: deploy
+  extends: .terraform
+  needs: [images]
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+  variables:
+    AWS_ROLE_ARN: $AWS_PLAN_ROLE_ARN
+    TF_COMMAND: terraform -chdir="$TF_DIR" plan -lock=false -out=tfplan
+  artifacts:
+    paths:
+      - $TF_DIR/tfplan
+    expire_in: 5 days
+
+apply:
+  stage: deploy
+  extends: .terraform
+  needs: [plan]
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+      when: manual
+  allow_failure: false
+  resource_group: production
+  environment:
+    name: production
+  variables:
+    AWS_ROLE_ARN: $AWS_DEPLOY_ROLE_ARN
+    TF_COMMAND: terraform -chdir="$TF_DIR" apply tfplan
