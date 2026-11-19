@@ -85,12 +85,6 @@ jobs:
             -backend-config="key=${{ vars.TF_STATE_KEY || 'better-every-day/terraform.tfstate' }}" \
             -backend-config="region=${{ vars.AWS_REGION }}" \
             -backend-config="use_lockfile=true"
-      - name: verify model access before provisioning
-        run: |
-          MODEL_ID=$(uv run python -c 'import os, yaml; print(yaml.safe_load(open(os.environ["BED_CONFIG_PATH"]))["model"]["id"])')
-          aws bedrock-runtime converse --model-id "$MODEL_ID" \
-            --messages '[{"role":"user","content":[{"text":"Reply OK."}]}]' \
-            --inference-config '{"maxTokens":4}' --query usage
       - name: ensure ECR repositories
         run: terraform -chdir="$TF_DIR" apply -auto-approve -target=aws_ecr_repository.worker -target=aws_ecr_repository.control
       - name: build and push images
@@ -208,6 +202,23 @@ jobs:
         with:
           role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
           aws-region: ${{ vars.AWS_REGION }}
+      - name: verify model access before provisioning
+        run: |
+          set -euo pipefail
+          MODEL_ID=$(uv run python -c 'import os, yaml; print(yaml.safe_load(open(os.environ["BED_CONFIG_PATH"]))["model"]["id"])')
+          for attempt in {1..20}; do
+            if aws bedrock-runtime converse --model-id "$MODEL_ID" \
+              --messages '[{"role":"user","content":[{"text":"Reply OK."}]}]' \
+              --inference-config '{"maxTokens":4}' --query usage 2>"$RUNNER_TEMP/model-error"; then
+              exit 0
+            fi
+            cat "$RUNNER_TEMP/model-error" >&2
+            if ! grep -q 'not available for this account' "$RUNNER_TEMP/model-error" || [ "$attempt" = 20 ]; then
+              exit 1
+            fi
+            echo "Waiting 30 seconds for model-access activation ($attempt/20)"
+            sleep 30
+          done
       - name: terraform init
         run: |
           [ -f "$TF_DIR/backend.tf" ] || printf 'terraform {\n  backend "s3" {}\n}\n' > "$TF_DIR/backend.tf"
