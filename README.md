@@ -1,11 +1,12 @@
 # better-every-day
 
-A self-hosted service that makes selected repositories a little better every day. On a schedule it scans a repo, picks a few small, real problems, fixes each one in a sandbox, runs the repo's own checks, files a ticket and opens a pull request. Humans only review. A daily Slack message lists what was opened.
+A self-hosted service that makes selected repositories a little better every day. It scans a repo and saves its understanding and findings in persistent AgentCore Memory, so scheduled runs can work through small, real problems without repeating exploration. Once the backlog is exhausted, it explores again. Each fix runs in a sandbox, passes the repo's own checks, gets a ticket and becomes a pull request. Humans only review. A daily Slack message lists what was opened.
 
 ## Architecture
 
 - **Control plane** (AWS Lambda, trusted): loads config, syncs outcomes of earlier bot PRs, applies backpressure, starts worker sessions, gates results, creates tickets, pushes branches, opens PRs, sends the summary. Holds all write credentials. Makes no model calls and runs no repo code.
 - **Worker** (Bedrock AgentCore Runtime session, untrusted): clones with a short-lived read-only token, installs toolchains with `mise`, runs a scout agent and a fixer agent (Strands, Opus on Bedrock), verifies with the repo's commands and returns file changes over SQS. It never sees VCS write or tracker credentials.
+- **Exploration memory** (AgentCore Memory): stores a compact repository map, candidate backlog and attempted findings across worker sessions. Workers send incremental checkpoints over SQS; the control plane validates them, writes snapshots to Memory and keeps the latest snapshot pointer in DynamoDB. Later runs recheck and fix cached findings without scouting again; exploration resumes when the backlog is exhausted. Memory is treated as untrusted repository data, and automatic memory extraction is disabled to avoid extra model calls.
 - **Untrusted worker output**: the control plane checks that the worker's base commit is on the base branch and recomputes every fingerprint itself.
 - **Gates in code**: diff size, file count, excluded and protected paths, path safety, overlap with open bot PRs, duplicate fingerprints, green verification. Rejections are recorded, never published.
 - **Idempotent publish**: ticket, branch and PR are looked up before being created, and every step is saved, so a redelivered or retried result never creates a second ticket or PR.
@@ -18,9 +19,9 @@ src/bed/core          models, config, gates, ports, control-plane logic
 src/bed/agents        prompts, workspace tools, Strands runner
 src/bed/worker        shell, workspace, pipeline, AgentCore entrypoint
 src/bed/connectors    github, gitlab, linear, jira, slack, shared HTTP client
-src/bed/platform/aws  DynamoDB, Secrets Manager, SQS, AgentCore, Lambda handlers
+src/bed/platform/aws  DynamoDB, Secrets Manager, SQS, AgentCore Runtime and Memory, Lambda handlers
 docker/               worker and control images (linux/arm64)
-infra/terraform/aws   VPC, firewall or egress proxy, runtime, Lambdas, table, queue, schedules
+infra/terraform/aws   VPC, firewall or egress proxy, runtime, memory, Lambdas, table, queue, schedules
 config/               example configurations (GitHub + Linear, GitLab + Jira)
 examples/ci/          copy-ready GitHub Actions and GitLab CI deploy pipelines
 ```
