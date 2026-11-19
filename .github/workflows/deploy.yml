@@ -209,7 +209,7 @@ jobs:
           for attempt in {1..20}; do
             if aws bedrock-runtime converse --model-id "$MODEL_ID" \
               --messages '[{"role":"user","content":[{"text":"Reply OK."}]}]' \
-              --inference-config '{"maxTokens":4}' --query usage 2>"$RUNNER_TEMP/model-error"; then
+              --inference-config '{"maxTokens":128}' --query usage 2>"$RUNNER_TEMP/model-error"; then
               exit 0
             fi
             cat "$RUNNER_TEMP/model-error" >&2
