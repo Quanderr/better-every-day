@@ -57,9 +57,9 @@ TIME_MARGIN_S = 120
 
 class StrandsAgentRunner:
     def __init__(self, model: ModelConfig):
-        from strands.models import BedrockModel
+        from strands.models import BedrockModel, CacheConfig
 
-        self.model = BedrockModel(model_id=model.id)
+        self.model = BedrockModel(model_id=model.id, cache_config=CacheConfig(strategy="auto"))
         self.tokens_used = 0
         self.started = time.monotonic()
 

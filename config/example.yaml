@@ -1,6 +1,6 @@
 model:
   provider: bedrock
-  id: us.anthropic.claude-opus-4-1-20250805-v1:0
+  id: us.anthropic.claude-opus-5-5
 connectors:
   vcs:
     main-github:

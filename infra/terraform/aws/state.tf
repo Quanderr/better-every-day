@@ -126,19 +126,23 @@ resource "aws_sqs_queue" "results" {
   })
 }
 
-resource "aws_cloudwatch_metric_alarm" "bedrock_tokens" {
-  alarm_name          = "${var.name}-bedrock-daily-tokens"
-  alarm_description   = "Daily Bedrock tokens for the configured model exceed the expected budget."
+locals {
+  price = var.bedrock_usd_per_million_tokens
+}
+
+resource "aws_cloudwatch_metric_alarm" "bedrock_cost" {
+  alarm_name          = "${var.name}-bedrock-daily-cost"
+  alarm_description   = "Estimated daily Bedrock spend for the configured model exceeds ${var.bedrock_daily_cost_alarm_usd} USD."
   evaluation_periods  = 1
-  threshold           = var.bedrock_daily_token_alarm
+  threshold           = var.bedrock_daily_cost_alarm_usd
   comparison_operator = "GreaterThanThreshold"
   treat_missing_data  = "notBreaching"
   alarm_actions       = var.alarm_topic_arn == null ? [] : [var.alarm_topic_arn]
 
   metric_query {
-    id          = "total"
-    expression  = "input + output"
-    label       = "Tokens per day"
+    id          = "usd"
+    expression  = "(FILL(input, 0) * ${local.price.input} + FILL(output, 0) * ${local.price.output} + FILL(cache_read, 0) * ${local.price.cache_read} + FILL(cache_write, 0) * ${local.price.cache_write}) / 1000000"
+    label       = "Estimated USD per day"
     return_data = true
   }
 
@@ -158,6 +162,28 @@ resource "aws_cloudwatch_metric_alarm" "bedrock_tokens" {
     metric {
       namespace   = "AWS/Bedrock"
       metric_name = "OutputTokenCount"
+      dimensions  = { ModelId = local.cfg.model.id }
+      period      = 86400
+      stat        = "Sum"
+    }
+  }
+
+  metric_query {
+    id = "cache_read"
+    metric {
+      namespace   = "AWS/Bedrock"
+      metric_name = "CacheReadInputTokenCount"
+      dimensions  = { ModelId = local.cfg.model.id }
+      period      = 86400
+      stat        = "Sum"
+    }
+  }
+
+  metric_query {
+    id = "cache_write"
+    metric {
+      namespace   = "AWS/Bedrock"
+      metric_name = "CacheWriteInputTokenCount"
       dimensions  = { ModelId = local.cfg.model.id }
       period      = 86400
       stat        = "Sum"

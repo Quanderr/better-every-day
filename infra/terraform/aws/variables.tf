@@ -29,9 +29,24 @@ variable "alarm_topic_arn" {
   default = null
 }
 
-variable "bedrock_daily_token_alarm" {
+variable "bedrock_daily_cost_alarm_usd" {
   type    = number
-  default = 50000000
+  default = 30
+}
+
+variable "bedrock_usd_per_million_tokens" {
+  type = object({
+    input       = number
+    output      = number
+    cache_read  = number
+    cache_write = number
+  })
+  default = {
+    input       = 4
+    output      = 20
+    cache_read  = 0.2
+    cache_write = 5
+  }
 }
 
 variable "extra_allowed_domains" {

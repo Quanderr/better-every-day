@@ -138,7 +138,7 @@ Restrict who can create AgentCore runtimes in PUBLIC network mode with the IAM c
 - Start a run now: `aws lambda invoke --function-name better-every-day-schedule --cli-binary-format raw-in-base64-out --payload '{"action":"run","repo":"<owner/repo>"}' /dev/stdout`.
 - Send the summary now: same command with `'{"action":"summary"}'`.
 - Logs: `/aws/lambda/better-every-day-schedule`, `/aws/lambda/better-every-day-result`, the worker under `/aws/bedrock-agentcore/runtimes/`, blocked egress in `/better-every-day/network-firewall/alert`.
-- Alarms: `better-every-day-results-dlq-not-empty` and `better-every-day-bedrock-daily-tokens`. Pass `-var alarm_topic_arn=<SNS topic ARN>` to be notified; the alarms exist either way.
+- Alarms: `better-every-day-results-dlq-not-empty` and `better-every-day-bedrock-daily-cost`. Pass `-var alarm_topic_arn=<SNS topic ARN>` to be notified; the alarms exist either way.
 - Dead-letter queue: results that failed processing 5 times land in `better-every-day-results-dlq` (kept 14 days). Check the result Lambda logs for the cause, fix it, then redrive to the main queue from the SQS console or with `aws sqs start-message-move-task --source-arn <dlq arn>`. Results older than 24 hours after a run timed out are ignored.
 - Findings stuck in `publishing` for over an hour, or that failed to publish, appear in the daily summary; a failed publish is retried by the next run that finds the same issue, reusing its ticket.
 
@@ -148,7 +148,7 @@ Names above assume the default `-var name=better-every-day`.
 
 Repo install and test commands get only an allowlisted environment (`PATH`, `HOME`, locale, CA bundle, `MISE_*`). VPC endpoints carry policies limited to this account, the results queue and ECR image layers.
 
-Worker DNS is limited by a Route 53 Resolver DNS Firewall to the same allowlist plus `amazonaws.com`, and Bedrock and SQS are reached through VPC endpoints; the worker role only works from those endpoints. Pass `-var bedrock_daily_token_alarm=<tokens>` to tune the daily Bedrock token alarm (default 50M).
+Worker DNS is limited by a Route 53 Resolver DNS Firewall to the same allowlist plus `amazonaws.com`, and Bedrock and SQS are reached through VPC endpoints; the worker role only works from those endpoints. Pass `-var bedrock_daily_cost_alarm_usd=<usd>` to tune the daily Bedrock cost alarm (default 30 USD). The estimate multiplies Bedrock token metrics (input, output, cache read, cache write) by `bedrock_usd_per_million_tokens`, which defaults to Claude Opus 5.5 list prices; set it to your model's Bedrock prices for your region.
 
 Worker egress is limited by AWS Network Firewall to the domains in `infra/terraform/aws/firewall.tf` plus `extra_allowed_domains`, matched on the TLS server name. This does not stop a process that sends an allowlisted server name to a raw IP address, and allowlisted public hosts (GitHub, npm, PyPI) can still receive data from repo code; TLS inspection is not configured. Blocked connections appear in the `/better-every-day/network-firewall/alert` log group.
 
