@@ -182,9 +182,41 @@ The private subnets use the first two availability zones of the region by name. 
 
 Restrict who can create AgentCore runtimes in PUBLIC network mode with the IAM condition keys `bedrock-agentcore:subnets` and `bedrock-agentcore:securityGroups` on your deployer roles.
 
+### Exploration memory and spending limits
+
+AWS deployments keep a compact repository map and candidate backlog in AgentCore Memory. The first run
+explores and checkpoints findings as it discovers them; it does not publish a fix. Later runs take cached
+candidates, recheck their evidence against the current checkout, and fix them without scouting again.
+An attempted candidate is consumed, including failed or abandoned attempts. When no unattempted candidates
+remain, another exploration cycle starts using the previous repository map. Checkpoints survive a model
+budget failure. They contain repository-derived data, never trusted instructions, and pass through the
+authenticated result queue before the control plane stores them. Snapshots expire after 365 days.
+No automatic AgentCore memory extraction strategies are enabled, so saving memory makes no hidden model calls.
+
+To limit model spending, set `model.prices` (USD per million tokens: `input`, `output`, `cache_read`,
+`cache_write`) and these repository/default `limits`:
+
+- `usd_budget`: maximum allowance for one exploration run.
+- `cached_run_usd_budget`: smaller allowance for a cached-finding run (default `0.75`).
+- `total_usd_budget`: cumulative allowance across runs for the same repository and `budget_key`.
+- `budget_key`: an explicit campaign identifier; changing it opens a new allowance. Never rotate it automatically.
+- `max_output_tokens`: per-call output bound (default `2048`). The token and time limits still apply.
+
+The controller reserves each run's entire allowance before starting it and does not refund reservations
+based on worker-reported costs. This conservatively prevents missing results and retries from reopening
+the cumulative allowance. Exhausted campaigns return `skipped_budget` without starting a worker.
+The worker accounts separately for cached input and reserves a conservative text-input/output upper bound
+before every SDK model call, including structured-output calls. Unknown usage keeps the reservation.
+It may stop below the dollar limit when the next call cannot safely fit. Rates must match the selected
+model/profile; these limits cover model requests through the worker, not infrastructure or unrelated callers.
+
+`schedules_enabled=false` keeps schedules paused. The installed GitHub workflow reads this from
+`BED_SCHEDULES_ENABLED` and defaults to `false`; set it to `true` deliberately after verification.
+Configuration changes also refresh the Lambda environment so warm processes read the new configuration.
+
 ### Updates
 
-- Config only: edit the file and run `terraform apply` with the same image tags. The control Lambdas read the config on cold start, so a change takes effect on their next cold start (new Lambda versions are not published for a config-only change).
+- Config only: edit the file and run `terraform apply` with the same image tags. The content hash refreshes the Lambda environment, forcing new processes to load the updated configuration.
 - Network mode: change `network_mode` and `terraform apply` with the same image tags. Run `terraform plan` first and read what it destroys; switching away from `firewall` deletes the Network Firewall and its log group. Not during a run.
 - Upgrading an existing deployment to network modes: run `terraform plan` with the default `network_mode` first. It should show the firewall, NAT gateway and related resources as moved (from `moved.tf`), not replaced, plus the Bedrock token alarm replaced by `<name>-bedrock-daily-cost`. Anything else being replaced is a reason to stop and check.
 - Code: ECR tags are immutable, so build and push both images under a **new** tag, then `terraform apply` with the new tags. Avoid deploying while a run is in progress; a result that arrives later is still processed.

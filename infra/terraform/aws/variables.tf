@@ -3,6 +3,11 @@ variable "name" {
   default = "better-every-day"
 }
 
+variable "schedules_enabled" {
+  type    = bool
+  default = true
+}
+
 variable "region" {
   type = string
 }

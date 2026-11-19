@@ -6,6 +6,7 @@ from typing import Any
 from bed.core.models import AppConfig, RepoConfig
 from bed.core.ports import (
     AgentRuntime,
+    ExplorationStore,
     NotifierConnector,
     SecretStore,
     StateStore,
@@ -23,6 +24,7 @@ class ControlDeps:
     secrets: SecretStore
     clock: Callable[[], datetime]
     connectors: dict[tuple[str, str], Any] = field(default_factory=dict)
+    memory: ExplorationStore | None = None
 
     def _connector(self, group: Group, name: str) -> Any:
         key = (group, name)

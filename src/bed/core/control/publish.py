@@ -117,6 +117,20 @@ def handle_result(result: WorkerResult, deps: ControlDeps) -> RunRecord:
     if run.status == "timeout" and deps.clock() - run.started_at > LATE_RESULT_WINDOW:
         return run
     repo = deps.config.repo(result.repo)
+    if result.exploration is not None and deps.memory is not None:
+        memory = result.exploration
+        if memory.base_sha != result.base_sha or not SHA.fullmatch(memory.base_sha):
+            raise ValueError("invalid exploration base commit")
+        if not deps.vcs(repo).is_ancestor(repo.name, memory.base_sha, repo.base_branch):
+            raise ValueError("untrusted exploration base commit")
+        if len(memory.model_dump_json().encode()) > 60_000:
+            raise ValueError("exploration checkpoint too large")
+        if any(not is_safe_path(p) for c in memory.candidates for p in c.files):
+            raise ValueError("unsafe cached candidate path")
+        deps.memory.put(repo.name, memory, run.run_id)
+    if result.kind == "checkpoint":
+        # A progress event must not finish the run or revoke its live clone token.
+        return run
     try:
         return _handle(run, result, repo, deps)
     finally:
@@ -264,6 +278,7 @@ def _record(result: FixResult, repo: RepoConfig, run_id: str, status: FindingSta
 
 def _finish(run: RunRecord, result: WorkerResult, deps: ControlDeps) -> RunRecord:
     finished = run.model_copy(update={"status": result.status, "error": result.error,
-                                      "tokens_used": result.tokens_used, "finished_at": deps.clock()})
+                                      "tokens_used": result.tokens_used, "cost_usd": result.cost_usd,
+                                      "finished_at": deps.clock()})
     deps.store.put_run(finished)
     return finished

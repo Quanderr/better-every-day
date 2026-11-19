@@ -1,3 +1,4 @@
+import json
 import logging
 import re
 import secrets
@@ -5,6 +6,7 @@ from datetime import datetime, timedelta
 
 from bed.core.control.deps import ControlDeps
 from bed.core.control.outcomes import sync_outcomes
+from bed.core.fingerprint import fingerprint
 from bed.core.models import BLOCKING_STATUSES, OutcomeDigest, RepoConfig, RunRecord, RunStatus, WorkerInput
 from bed.core.ports import BotPr
 
@@ -41,9 +43,31 @@ def start_run(repo_name: str, deps: ControlDeps) -> RunRecord:
     open_prs = [pr for pr in prs if pr.state == "open"]
     if len(open_prs) >= repo.limits.max_open_bot_prs:
         return finish("skipped_backpressure")
+    exploration = deps.memory.get(repo.name) if deps.memory else None
+    known = {f.fingerprint for f in deps.store.list_findings(repo.name) if f.status in BLOCKING_STATUSES}
+    pending = exploration and any(fingerprint(c) not in set(exploration.attempted) | known
+                                  for c in exploration.candidates)
+    allocation = repo.limits.usd_budget
+    if allocation is not None:
+        if pending:
+            allocation = min(allocation, repo.limits.cached_run_usd_budget)
+        if repo.limits.total_usd_budget is not None:
+            key = f"budget#{repo.name}#{repo.limits.budget_key}"
+            reserved = json.loads(deps.store.get_meta(key) or "{}")
+            remaining = round(repo.limits.total_usd_budget - sum(reserved.values()), 8)
+            if remaining <= 0:
+                return finish("skipped_budget")
+            allocation = min(allocation, remaining)
+            # Reservations are never refunded from untrusted worker-reported costs.
+            # A lost result therefore cannot reopen the spending allowance.
+            reserved[run_id] = allocation
+            deps.store.put_meta(key, json.dumps(reserved))
+        repo = repo.model_copy(update={"limits": repo.limits.model_copy(update={"usd_budget": allocation})})
     nonce = secrets.token_hex(16)
     payload, token_id = _worker_input(run_id, repo, open_prs, nonce, deps)
-    started = finish("started").model_copy(update={"nonce": nonce, "read_token_id": token_id})
+    payload = payload.model_copy(update={"exploration": exploration, "memory_enabled": deps.memory is not None})
+    started = finish("started").model_copy(update={"nonce": nonce, "read_token_id": token_id,
+                                                  "budget_reserved_usd": allocation or 0})
     deps.store.put_run(started)
     try:
         deps.runtime.start(session_id(repo.name, run_id), payload)

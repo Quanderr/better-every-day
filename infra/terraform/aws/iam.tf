@@ -117,6 +117,11 @@ data "aws_iam_policy_document" "lambda_trust" {
 
 data "aws_iam_policy_document" "control" {
   statement {
+    sid       = "ExplorationMemory"
+    actions   = ["bedrock-agentcore:CreateEvent", "bedrock-agentcore:GetEvent"]
+    resources = [aws_bedrockagentcore_memory.exploration.arn]
+  }
+  statement {
     sid = "State"
     actions = [
       "dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:DeleteItem", "dynamodb:Query",

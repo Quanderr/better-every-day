@@ -20,6 +20,11 @@ class Limits(Model):
     max_files: int = Field(5, ge=1)
     token_budget: int = Field(2_000_000, ge=1)
     timeout_minutes: int = Field(60, ge=1)
+    usd_budget: float | None = Field(None, gt=0)
+    cached_run_usd_budget: float = Field(0.75, gt=0)
+    total_usd_budget: float | None = Field(None, gt=0)
+    budget_key: str = Field("default", min_length=1, max_length=80)
+    max_output_tokens: int = Field(2048, ge=16, le=8192)
 
 
 class Verify(Model):
@@ -56,9 +61,17 @@ class Notifications(Model):
     timezone: str
 
 
+class TokenPrices(Model):
+    input: float = Field(ge=0)
+    output: float = Field(ge=0)
+    cache_read: float = Field(ge=0)
+    cache_write: float = Field(ge=0)
+
+
 class ModelConfig(Model):
     provider: str
     id: str
+    prices: TokenPrices | None = None
 
 
 class AppConfig(Model):
@@ -109,6 +122,15 @@ class OutcomeDigest(Model):
     close_comment: str = ""
 
 
+class ExplorationMemory(Model):
+    generation: str = Field(max_length=100)
+    base_sha: str = Field(max_length=40)
+    summary: str = Field("", max_length=8000)
+    candidates: list[Candidate] = Field(default_factory=list, max_length=20)
+    attempted: list[str] = Field(default_factory=list, max_length=40)
+    complete: bool = False
+
+
 class WorkerInput(Model):
     run_id: str
     repo: RepoConfig
@@ -121,6 +143,8 @@ class WorkerInput(Model):
     lessons: str = ""
     recent_outcomes: list[OutcomeDigest] = []
     nonce: str = ""
+    memory_enabled: bool = False
+    exploration: ExplorationMemory | None = None
 
 
 RunStatus = Literal[
@@ -132,6 +156,7 @@ RunStatus = Literal[
     "timeout",
     "skipped_backpressure",
     "skipped_running",
+    "skipped_budget",
 ]
 
 
@@ -145,6 +170,9 @@ class WorkerResult(Model):
     tokens_used: int = 0
     error: str | None = None
     nonce: str = ""
+    kind: Literal["result", "checkpoint"] = "result"
+    exploration: ExplorationMemory | None = None
+    cost_usd: float = Field(0, ge=0)
 
 
 FindingStatus = Literal["publishing", "publish_failed", "published", "merged", "closed", "rejected_by_gate", "fix_failed"]
@@ -181,3 +209,5 @@ class RunRecord(Model):
     tokens_used: int = 0
     nonce: str = ""
     read_token_id: str | None = None
+    cost_usd: float = Field(0, ge=0)
+    budget_reserved_usd: float = Field(0, ge=0)

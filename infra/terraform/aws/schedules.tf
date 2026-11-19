@@ -22,6 +22,7 @@ locals {
 }
 
 resource "aws_scheduler_schedule" "repo" {
+  state                        = var.schedules_enabled ? "ENABLED" : "DISABLED"
   for_each                     = local.repos_by_name
   name                         = substr("${var.name}-${replace(each.key, "/[^A-Za-z0-9_.-]/", "-")}", 0, 64)
   schedule_expression          = local.eventbridge_cron["repo:${each.key}"]
@@ -43,6 +44,7 @@ resource "aws_scheduler_schedule" "repo" {
 }
 
 resource "aws_scheduler_schedule" "summary" {
+  state                        = var.schedules_enabled ? "ENABLED" : "DISABLED"
   count                        = try(local.cfg.notifications, null) == null ? 0 : 1
   name                         = "${var.name}-summary"
   schedule_expression          = local.eventbridge_cron["summary"]

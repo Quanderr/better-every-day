@@ -62,6 +62,7 @@
         "cloudwatch:DescribeAlarms", "cloudwatch:ListTagsForResource",
         "scheduler:GetSchedule", "scheduler:ListSchedules",
         "bedrock-agentcore:GetAgentRuntime", "bedrock-agentcore:ListAgentRuntimes",
+        "bedrock-agentcore:GetMemory",
         "bedrock-agentcore:ListAgentRuntimeVersions", "bedrock-agentcore:ListAgentRuntimeEndpoints",
         "bedrock-agentcore:ListTagsForResource"
       ],

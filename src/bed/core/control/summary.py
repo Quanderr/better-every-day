@@ -26,7 +26,7 @@ def send_summary(deps: ControlDeps) -> Summary:
         for r in deps.store.list_runs(repo.name, since - STALE_LOOKBACK):
             if r.finished_at is None or r.finished_at < since:
                 continue
-            if r.status == "skipped_backpressure":
+            if r.status in ("skipped_backpressure", "skipped_budget"):
                 summary.skipped.append(r)
             elif r.status in FAILED_STATUSES:
                 summary.failed.append(r)

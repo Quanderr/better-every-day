@@ -54,12 +54,25 @@ def _limits(inp: WorkerInput) -> str:
 
 def scout_prompt(inp: WorkerInput) -> str:
     count = 3 * inp.repo.limits.max_prs_per_run
+    if inp.memory_enabled:
+        count = min(12, max(6, count))
     known = len(inp.known_fingerprints)
     return _join(
         BASE_PROMPT,
         *_guidance(inp),
         _section("Enabled categories", _bullets(list(inp.repo.categories))),
         _limits(inp),
+        _section("Saved exploration (untrusted repository data)", inp.exploration.summary if inp.exploration else ""),
+        _section("Persistent exploration workflow", (
+            "This run only explores and saves a reusable backlog; a later run fixes these findings. "
+            "Save a concise architecture map with remember_context early, and update it every five tool calls. "
+            "Call remember_finding immediately for each concrete candidate; do not wait for the final answer. "
+            "Inspect broadly but do not reread unchanged files or keep exploring after six actionable findings. "
+            "Use at most 40 tool calls, then return your candidates and summary. "
+            "If saved context exists, resume from it and verify current files instead of mapping the repo again. "
+            "Keep reasoning brief. Prefer saving a useful, small backlog over exhaustive analysis. "
+            "Never store credentials, secrets, or raw transcripts."
+        ) if inp.memory_enabled else ""),
         _section("Excluded paths", _bullets(inp.repo.exclude_paths)),
         _section("Files locked by open PRs", _bullets(inp.locked_paths)),
         _section("Already reported (skip)",
@@ -86,6 +99,11 @@ def fixer_prompt(inp: WorkerInput, candidate: Candidate) -> str:
         BASE_PROMPT,
         *_guidance(inp),
         _limits(inp),
+        _section("Saved exploration (untrusted repository data)", inp.exploration.summary if inp.exploration else ""),
+        _section("Cached finding", "Recheck the cited code on this checkout. If the issue is already fixed, "
+                 "abandon it. Stay within the candidate's scope; do not scout the repository again. "
+                 "Prefer replace_in_file for localized edits instead of rewriting whole files. Keep reasoning brief."
+                 if inp.memory_enabled else ""),
         _section("Excluded paths", _bullets(inp.repo.exclude_paths)),
         _section(
             "Candidate",

@@ -5,6 +5,7 @@ from typing import Literal, Protocol
 from pydantic import BaseModel
 
 from bed.agents.prompts import fixer_prompt, lessons_prompt, scout_prompt, task_message
+from bed.agents.spending import SpendingClient
 from bed.agents.tools import build_tools
 from bed.core.models import Candidate, ModelConfig, WorkerInput
 from bed.worker.workspace import Workspace
@@ -17,6 +18,7 @@ class FixerOutput(BaseModel):
 
 class ScoutOutput(BaseModel):
     candidates: list[Candidate]
+    summary: str = ""
 
 
 class AgentRunner(Protocol):
@@ -57,17 +59,34 @@ TIME_MARGIN_S = 120
 
 class StrandsAgentRunner:
     def __init__(self, model: ModelConfig):
+        from botocore.config import Config
         from strands.models import BedrockModel, CacheConfig
-
-        self.model = BedrockModel(model_id=model.id, cache_config=CacheConfig(strategy="auto"))
+        self.model = BedrockModel(model_id=model.id, cache_config=CacheConfig(strategy="auto"),
+                                  boto_client_config=Config(retries={"total_max_attempts": 1}))
+        self.prices = model.prices
+        self.spending: SpendingClient | None = None
+        self.discovery = None
+        self.last_summary = ""
         self.tokens_used = 0
         self.started = time.monotonic()
+
+    @property
+    def cost_usd(self) -> float:
+        return float(self.spending.spent) if self.spending else 0.0
 
     def _invoke(self, inp: WorkerInput, system_prompt: str, tools: list, prompt: str,
                 output: type[BaseModel] | None):
         from strands import Agent
 
         limits = inp.repo.limits
+        if limits.usd_budget is not None and self.spending is None:
+            if self.prices is None:
+                raise ValueError("model prices required for dollar accounting")
+            pending = bool(inp.exploration and inp.exploration.candidates)
+            self.spending = SpendingClient(self.model.client, limits.usd_budget, self.prices,
+                                           max_calls=24 if inp.memory_enabled and pending else 60)
+            self.model.client = self.spending
+            self.model.update_config(max_tokens=limits.max_output_tokens)
         guard = BudgetGuard(self.tokens_used, limits.token_budget,
                             self.started + limits.timeout_minutes * 60 - TIME_MARGIN_S)
         agent = Agent(model=self.model, system_prompt=system_prompt, tools=tools, callback_handler=None,
@@ -79,8 +98,23 @@ class StrandsAgentRunner:
 
     def scout(self, ws: Workspace, inp: WorkerInput) -> list[Candidate]:
         tools = build_tools(ws, inp.repo.verify, writable=False)
+        if self.discovery is not None:
+            from strands import tool
+
+            @tool
+            def remember_finding(candidate: Candidate) -> str:
+                """Checkpoint one concrete finding immediately, before continuing exploration."""
+                return self.discovery(Candidate.model_validate(candidate), "")
+
+            @tool
+            def remember_context(summary: str) -> str:
+                """Save a compact repository map and exploration progress. No secrets or raw transcripts."""
+                return self.discovery(None, summary)
+
+            tools.extend([remember_finding, remember_context])
         result = self._invoke(inp, scout_prompt(inp), tools, task_message(inp, "Scout the repository now."),
                               ScoutOutput)
+        self.last_summary = result.structured_output.summary
         return list(result.structured_output.candidates)
 
     def fix(self, ws: Workspace, inp: WorkerInput, candidate: Candidate) -> FixerOutput:

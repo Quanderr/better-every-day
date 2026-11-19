@@ -3,7 +3,7 @@ from typing import Literal, Protocol
 
 from pydantic import BaseModel
 
-from bed.core.models import FileChange, Finding, RunRecord, WorkerInput, WorkerResult
+from bed.core.models import ExplorationMemory, FileChange, Finding, RunRecord, WorkerInput, WorkerResult
 
 
 class VcsError(Exception):
@@ -87,6 +87,11 @@ class ResultSink(Protocol):
 
 class SecretStore(Protocol):
     def get(self, name: str) -> dict[str, str]: ...
+
+
+class ExplorationStore(Protocol):
+    def get(self, repo: str) -> ExplorationMemory | None: ...
+    def put(self, repo: str, memory: ExplorationMemory, run_id: str) -> None: ...
 
 
 class StateStore(Protocol):

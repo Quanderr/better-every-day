@@ -12,6 +12,7 @@ from bed.core.control.publish import handle_result
 from bed.core.control.start_run import start_run
 from bed.core.control.summary import send_summary
 from bed.platform.aws.eventbus import parse_result
+from bed.platform.aws.memory import AgentCoreExplorationStore
 from bed.platform.aws.runtime import AgentCoreRuntime
 from bed.platform.aws.secrets import SecretsManagerStore
 from bed.platform.aws.state import DynamoStateStore
@@ -24,12 +25,14 @@ log.setLevel(logging.INFO)
 def build_deps() -> ControlDeps:
     obj = boto3.client("s3").get_object(Bucket=os.environ["BED_CONFIG_BUCKET"], Key=os.environ["BED_CONFIG_KEY"])
     config = load_config(obj["Body"].read().decode())
+    state = DynamoStateStore(os.environ["BED_TABLE"])
     return ControlDeps(
         config=config,
-        store=DynamoStateStore(os.environ["BED_TABLE"]),
+        store=state,
         runtime=AgentCoreRuntime(os.environ["BED_RUNTIME_ARN"]),
         secrets=SecretsManagerStore(),
         clock=lambda: datetime.now(UTC),
+        memory=AgentCoreExplorationStore(os.environ["BED_MEMORY_ID"], state) if os.getenv("BED_MEMORY_ID") else None,
     )
 
 

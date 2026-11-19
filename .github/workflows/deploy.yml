@@ -24,6 +24,7 @@ env:
   BED_CONFIG_PATH: .tools/ci-config.yaml
   TF_VAR_config_path: ../../../.tools/ci-config.yaml
   TF_VAR_network_mode: ${{ vars.BED_NETWORK_MODE || 'cheap' }}
+  TF_VAR_schedules_enabled: ${{ vars.BED_SCHEDULES_ENABLED || 'false' }}
   TF_VAR_bedrock_usd_per_million_tokens: ${{ vars.BED_MODEL_PRICES || '{"input":4,"output":20,"cache_read":0.2,"cache_write":5}' }}
   TF_VAR_worker_image_tag: ${{ github.sha }}
   TF_VAR_control_image_tag: ${{ github.sha }}

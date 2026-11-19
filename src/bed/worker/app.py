@@ -48,7 +48,8 @@ def handle_invocation(
     def job() -> None:
         try:
             agents = runner_factory(inp.model)
-            result = run_worker(inp, Workspace(workdir_base / inp.run_id), agents, time.monotonic)
+            result = run_worker(inp, Workspace(workdir_base / inp.run_id), agents, time.monotonic,
+                                checkpoint=sink.emit)
         except Exception as e:
             log.exception("worker job crashed")
             result = WorkerResult(run_id=inp.run_id, repo=inp.repo.name, status="failed", error=repr(e),
