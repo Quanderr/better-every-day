@@ -4,6 +4,8 @@ A self-hosted service that makes selected repositories a little better every day
 
 ## Architecture
 
+![AWS architecture](docs/aws-architecture.drawio.png)
+
 - **Control plane** (AWS Lambda, trusted): loads config, syncs outcomes of earlier bot PRs, applies backpressure, starts worker sessions, gates results, creates tickets, pushes branches, opens PRs, sends the summary. Holds all write credentials. Makes no model calls and runs no repo code.
 - **Worker** (Bedrock AgentCore Runtime session, untrusted): clones with a short-lived read-only token, installs toolchains with `mise`, runs a scout agent and a fixer agent (Strands, Opus on Bedrock), verifies with the repo's commands and returns file changes over SQS. It never sees VCS write or tracker credentials.
 - **Exploration memory** (AgentCore Memory): stores a compact repository map, candidate backlog and attempted findings across worker sessions. Workers send incremental checkpoints over SQS; the control plane validates them, writes snapshots to Memory and keeps the latest snapshot pointer in DynamoDB. Later runs recheck and fix cached findings without scouting again; exploration resumes when the backlog is exhausted. Memory is treated as untrusted repository data, and automatic memory extraction is disabled to avoid extra model calls.
@@ -30,37 +32,37 @@ examples/ci/          copy-ready GitHub Actions and GitLab CI deploy pipelines
 
 One YAML file, validated with `uv run bed validate <path>` and again at `terraform plan`. Unknown keys are errors. See `config/example.yaml` (GitHub, Linear, Slack) and `config/example-gitlab-jira.yaml` (GitLab, Jira, Slack).
 
-| Key | Meaning | Default |
-|---|---|---|
-| `model.provider` | Model provider name | required (`bedrock`) |
-| `model.id` | Bedrock inference profile id | required |
-| `connectors.vcs.<name>` | `type: github` or `gitlab`, `auth_secret: <Secrets Manager name>`, optional `api_url` (self-hosted GitLab; see Limits for GitHub Enterprise) | |
-| `connectors.tracker.<name>` | `type: linear` or `jira`, `auth_secret`; Jira also needs `url` and takes optional `issue_type` (default `Task`) | |
-| `connectors.notifier.<name>` | `type: slack`, `auth_secret`, `channel` | |
-| `notifications.notifier` | Notifier used for the daily summary | none: no summary |
-| `notifications.summary_schedule` | 5-field cron | |
-| `notifications.timezone` | IANA timezone | |
-| `defaults.prompt` | Deployment-wide guidance (prompt layer 2) | `""` |
-| `defaults.categories` | Any of `bug`, `error-handling`, `test-gap`, `dead-code`, `perf`, `docs` | all |
-| `defaults.limits.max_prs_per_run` | PRs opened per run | 2 |
-| `defaults.limits.max_open_bot_prs` | Skip the run at or above this many open bot PRs | 5 |
-| `defaults.limits.max_diff_lines` | Added plus removed lines per change | 150 |
-| `defaults.limits.max_files` | Files per change | 5 |
-| `defaults.limits.token_budget` | Model tokens per run | 2000000 |
-| `defaults.limits.timeout_minutes` | Wall-clock per run | 60 |
-| `defaults.base_branch`, `defaults.verify`, `defaults.exclude_paths`, `defaults.protected_paths` | Defaults for the matching `repos[]` keys; a repo value replaces the default, except `limits` (merged key by key) and `protected_paths` (lists concatenated) | |
-| `repos[].name` | `owner/repo` | required |
-| `repos[].vcs`, `repos[].tracker` | Connector names | required |
-| `repos[].tracker_project` | Linear team key or Jira project key | required |
-| `repos[].schedule`, `repos[].timezone` | 5-field cron and IANA timezone; must not restrict both day-of-month and day-of-week, no day-of-week steps or wrapping ranges (EventBridge limits) | required |
-| `repos[].base_branch` | Branch to clone and target | `main` |
-| `repos[].verify.mode` | `sandbox` runs checks in the worker; `ci` leaves them to the repo's CI | `sandbox` |
-| `repos[].verify.install` | Install command, run once per session | none |
-| `repos[].verify.commands` | Check commands; required in `sandbox` mode | `[]` |
-| `repos[].exclude_paths` | Globs never touched | `[]` |
-| `repos[].protected_paths` | Extra globs always rejected, added to the built-in list | `[]` |
-| `repos[].prompt` | Repo guidance (prompt layer 3) | `""` |
-| `repos[].categories`, `repos[].limits` | Override the defaults; limits merge key by key | defaults |
+| Key                                                                                             | Meaning                                                                                                                                                     | Default              |
+| ----------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------- |
+| `model.provider`                                                                                | Model provider name                                                                                                                                         | required (`bedrock`) |
+| `model.id`                                                                                      | Bedrock inference profile id                                                                                                                                | required             |
+| `connectors.vcs.<name>`                                                                         | `type: github` or `gitlab`, `auth_secret: <Secrets Manager name>`, optional `api_url` (self-hosted GitLab; see Limits for GitHub Enterprise)                |                      |
+| `connectors.tracker.<name>`                                                                     | `type: linear` or `jira`, `auth_secret`; Jira also needs `url` and takes optional `issue_type` (default `Task`)                                             |                      |
+| `connectors.notifier.<name>`                                                                    | `type: slack`, `auth_secret`, `channel`                                                                                                                     |                      |
+| `notifications.notifier`                                                                        | Notifier used for the daily summary                                                                                                                         | none: no summary     |
+| `notifications.summary_schedule`                                                                | 5-field cron                                                                                                                                                |                      |
+| `notifications.timezone`                                                                        | IANA timezone                                                                                                                                               |                      |
+| `defaults.prompt`                                                                               | Deployment-wide guidance (prompt layer 2)                                                                                                                   | `""`                 |
+| `defaults.categories`                                                                           | Any of `bug`, `error-handling`, `test-gap`, `dead-code`, `perf`, `docs`                                                                                     | all                  |
+| `defaults.limits.max_prs_per_run`                                                               | PRs opened per run                                                                                                                                          | 2                    |
+| `defaults.limits.max_open_bot_prs`                                                              | Skip the run at or above this many open bot PRs                                                                                                             | 5                    |
+| `defaults.limits.max_diff_lines`                                                                | Added plus removed lines per change                                                                                                                         | 150                  |
+| `defaults.limits.max_files`                                                                     | Files per change                                                                                                                                            | 5                    |
+| `defaults.limits.token_budget`                                                                  | Model tokens per run                                                                                                                                        | 2000000              |
+| `defaults.limits.timeout_minutes`                                                               | Wall-clock per run                                                                                                                                          | 60                   |
+| `defaults.base_branch`, `defaults.verify`, `defaults.exclude_paths`, `defaults.protected_paths` | Defaults for the matching `repos[]` keys; a repo value replaces the default, except `limits` (merged key by key) and `protected_paths` (lists concatenated) |                      |
+| `repos[].name`                                                                                  | `owner/repo`                                                                                                                                                | required             |
+| `repos[].vcs`, `repos[].tracker`                                                                | Connector names                                                                                                                                             | required             |
+| `repos[].tracker_project`                                                                       | Linear team key or Jira project key                                                                                                                         | required             |
+| `repos[].schedule`, `repos[].timezone`                                                          | 5-field cron and IANA timezone; must not restrict both day-of-month and day-of-week, no day-of-week steps or wrapping ranges (EventBridge limits)           | required             |
+| `repos[].base_branch`                                                                           | Branch to clone and target                                                                                                                                  | `main`               |
+| `repos[].verify.mode`                                                                           | `sandbox` runs checks in the worker; `ci` leaves them to the repo's CI                                                                                      | `sandbox`            |
+| `repos[].verify.install`                                                                        | Install command, run once per session                                                                                                                       | none                 |
+| `repos[].verify.commands`                                                                       | Check commands; required in `sandbox` mode                                                                                                                  | `[]`                 |
+| `repos[].exclude_paths`                                                                         | Globs never touched                                                                                                                                         | `[]`                 |
+| `repos[].protected_paths`                                                                       | Extra globs always rejected, added to the built-in list                                                                                                     | `[]`                 |
+| `repos[].prompt`                                                                                | Repo guidance (prompt layer 3)                                                                                                                              | `""`                 |
+| `repos[].categories`, `repos[].limits`                                                          | Override the defaults; limits merge key by key                                                                                                              | defaults             |
 
 Bot PRs/MRs are found by the `better-every-day` label. Do not remove it: unlabelled bot PRs are invisible to outcome sync, overlap checks and `max_open_bot_prs`.
 
@@ -69,6 +71,7 @@ Protected paths are always rejected: CI and build configuration (`.github/**`, `
 ### Keep CI secrets away from bot branches
 
 Bot branches are pushed into the repository itself, so their CI runs before anyone reviews them, and tests are code the bot may edit. Make sure that CI cannot read deploy or production secrets on unprotected branches:
+
 - GitHub: keep secrets in environments with required reviewers or a `main`-only branch rule; do not grant the App the Workflows permission.
 - GitLab: mark CI/CD variables as protected so they are only exposed on protected branches; leave bot branches unprotected.
 
@@ -95,20 +98,20 @@ Create one JSON secret per connector in Secrets Manager, named as in `auth_secre
 
 Rough us-east-1 list-price estimate for the example config: 2 repos on weekdays (about 44 runs per month), Claude Opus 5.5 with prompt caching. Check current AWS and Bedrock pricing for your region.
 
-| Element | Basis | ~USD/month |
-|---|---|---|
-| Network Firewall | 2 endpoints × $0.395/h | 577 |
-| VPC interface endpoints | 5 endpoints × 2 AZs × $0.01/h | 73 |
-| NAT gateway + public IP | $0.045/h + $0.005/h | 37 |
-| Bedrock tokens (Opus 5.5, cached) | 0.6–1.2M tokens per run × 44 runs, about $3 per 1M tokens | 80–160 |
-| AgentCore Runtime | active CPU only, about $0.10–0.30 per run | 5–15 |
-| Firewall and NAT data processing | 1–2 GB per run × $0.11/GB | 5–10 |
-| CloudWatch logs and alarms | log ingestion $0.50/GB, cost alarm with 4 metrics | 3–10 |
-| Secrets Manager | 4 secrets × $0.40 | 2 |
-| Route 53 Resolver DNS Firewall | queries and domain lists | 1–2 |
-| ECR | 2–5 GB of images | <1 |
-| Lambda, DynamoDB (with PITR), SQS, S3, EventBridge | pay-per-use, low volume | <3 |
-| **Total** | | **~790–890** |
+| Element                                            | Basis                                                     | ~USD/month   |
+| -------------------------------------------------- | --------------------------------------------------------- | ------------ |
+| Network Firewall                                   | 2 endpoints × $0.395/h                                    | 577          |
+| VPC interface endpoints                            | 5 endpoints × 2 AZs × $0.01/h                             | 73           |
+| NAT gateway + public IP                            | $0.045/h + $0.005/h                                       | 37           |
+| Bedrock tokens (Opus 5.5, cached)                  | 0.6–1.2M tokens per run × 44 runs, about $3 per 1M tokens | 80–160       |
+| AgentCore Runtime                                  | active CPU only, about $0.10–0.30 per run                 | 5–15         |
+| Firewall and NAT data processing                   | 1–2 GB per run × $0.11/GB                                 | 5–10         |
+| CloudWatch logs and alarms                         | log ingestion $0.50/GB, cost alarm with 4 metrics         | 3–10         |
+| Secrets Manager                                    | 4 secrets × $0.40                                         | 2            |
+| Route 53 Resolver DNS Firewall                     | queries and domain lists                                  | 1–2          |
+| ECR                                                | 2–5 GB of images                                          | <1           |
+| Lambda, DynamoDB (with PITR), SQS, S3, EventBridge | pay-per-use, low volume                                   | <3           |
+| **Total**                                          |                                                           | **~790–890** |
 
 - The network stack (about $690) is fixed and paid even when nothing runs; Network Firewall alone is about 70% of the bill.
 - Token cost assumes about 80% of input tokens are cache reads. Without caching it is about $190–370; with every run using its full `token_budget` it is about $250–300. The `bedrock_daily_cost_alarm_usd` alarm (default 30 USD per day) bounds a runaway.
@@ -119,19 +122,19 @@ Rough us-east-1 list-price estimate for the example config: 2 repos on weekdays 
 
 Choose how the worker's network is locked down with `-var network_mode=<mode>` (default `firewall`). All modes keep the private subnets, the Route 53 Resolver DNS Firewall, the free S3 gateway endpoint and the rest of the stack.
 
-| | `firewall` (default) | `proxy` | `cheap` |
-|---|---|---|---|
-| Egress path | AWS Network Firewall (2 AZs) → NAT gateway | One EC2 egress proxy (`proxy_instance_type`, default `t4g.nano`) with the NAT IP | NAT gateway |
-| VPC interface endpoints | Yes | Yes | No |
-| Fixed network cost | ~$690/month | ~$80/month | ~$40/month |
-| Outbound traffic from repo code | HTTPS to allowlisted domains, checked on the TLS server name | HTTPS (port 443) to allowlisted domains only; everything else is dropped | Anything, anywhere |
-| Allowlisted name sent to a raw IP | Passes (the firewall checks the name, not the IP) | Blocked: the proxy resolves the name itself and connects there, ignoring the original IP | Not applicable |
-| Plain HTTP and other ports | Dropped | Dropped | Allowed |
-| Worker role (Bedrock, SQS) works only | Through this VPC's endpoints | Through this VPC's endpoints | From the NAT gateway's public IP |
-| Bedrock and SQS traffic | PrivateLink | PrivateLink | Public AWS endpoints over TLS |
-| Availability | Managed, multi-AZ | Single instance in one AZ; EC2 auto-recovery only. Runs fail while it is down | Managed NAT gateway |
-| Egress log | `/better-every-day/network-firewall/alert` | `/var/log/nginx/egress.log` on the instance, read through Session Manager | None |
-| You operate | Nothing | The instance: OS updates (replace it to pick up a new AMI) | Nothing |
+|                                       | `firewall` (default)                                         | `proxy`                                                                                  | `cheap`                          |
+| ------------------------------------- | ------------------------------------------------------------ | ---------------------------------------------------------------------------------------- | -------------------------------- |
+| Egress path                           | AWS Network Firewall (2 AZs) → NAT gateway                   | One EC2 egress proxy (`proxy_instance_type`, default `t4g.nano`) with the NAT IP         | NAT gateway                      |
+| VPC interface endpoints               | Yes                                                          | Yes                                                                                      | No                               |
+| Fixed network cost                    | ~$690/month                                                  | ~$80/month                                                                               | ~$40/month                       |
+| Outbound traffic from repo code       | HTTPS to allowlisted domains, checked on the TLS server name | HTTPS (port 443) to allowlisted domains only; everything else is dropped                 | Anything, anywhere               |
+| Allowlisted name sent to a raw IP     | Passes (the firewall checks the name, not the IP)            | Blocked: the proxy resolves the name itself and connects there, ignoring the original IP | Not applicable                   |
+| Plain HTTP and other ports            | Dropped                                                      | Dropped                                                                                  | Allowed                          |
+| Worker role (Bedrock, SQS) works only | Through this VPC's endpoints                                 | Through this VPC's endpoints                                                             | From the NAT gateway's public IP |
+| Bedrock and SQS traffic               | PrivateLink                                                  | PrivateLink                                                                              | Public AWS endpoints over TLS    |
+| Availability                          | Managed, multi-AZ                                            | Single instance in one AZ; EC2 auto-recovery only. Runs fail while it is down            | Managed NAT gateway              |
+| Egress log                            | `/better-every-day/network-firewall/alert`                   | `/var/log/nginx/egress.log` on the instance, read through Session Manager                | None                             |
+| You operate                           | Nothing                                                      | The instance: OS updates (replace it to pick up a new AMI)                               | Nothing                          |
 
 **`proxy`** replaces Network Firewall and the NAT gateway with one Amazon Linux 2023 instance in the first public subnet. Private subnets route all traffic to it. nftables redirects HTTPS from the private subnets to nginx, which reads the TLS server name, matches it against the same allowlist (`extra_allowed_domains` included) and connects to that name. IP forwarding is off, so anything nginx does not proxy is dropped. The instance has no SSH key and requires IMDSv2; shell access is through SSM Session Manager only (its role has `AmazonSSMManagedInstanceCore` and nothing else). Anyone in the account allowed `ssm:StartSession` on it gets root on the proxy and can change the allowlist, so limit that permission. A change to the allowlist replaces the instance, which briefly cuts egress, so do not apply during a run. The proxy itself has unrestricted outbound access for package installs.
 
@@ -142,6 +145,7 @@ Switching modes is an in-place `terraform apply` with the same image tags. Avoid
 ### First deploy
 
 All `terraform` commands below take the same variables; set them once:
+
 ```
 export TF_VAR_region=<region> TF_VAR_config_path=$PWD/<config.yaml> \
        TF_VAR_worker_image_tag=<tag> TF_VAR_control_image_tag=<tag>
@@ -149,15 +153,15 @@ export TF_VAR_region=<region> TF_VAR_config_path=$PWD/<config.yaml> \
 
 Optional, set the same way if you need them:
 
-| Variable | Default | Purpose |
-|---|---|---|
-| `TF_VAR_network_mode` | `firewall` | `firewall`, `proxy` or `cheap`; see Network modes |
-| `TF_VAR_proxy_instance_type` | `t4g.nano` | Egress proxy size in `proxy` mode |
-| `TF_VAR_extra_allowed_domains` | `[]` | Extra egress domains, as a JSON list: `'[".crates.io"]'` |
-| `TF_VAR_alarm_topic_arn` | none | SNS topic for alarms |
-| `TF_VAR_bedrock_daily_cost_alarm_usd` | `30` | Daily Bedrock spend alarm |
-| `TF_VAR_bedrock_usd_per_million_tokens` | Opus 5.5 list prices | `'{input=4,output=20,cache_read=0.2,cache_write=5}'`; set your model's Bedrock prices |
-| `TF_VAR_name`, `TF_VAR_vpc_cidr` | `better-every-day`, `10.42.0.0/16` | Resource name prefix and VPC range |
+| Variable                                | Default                            | Purpose                                                                               |
+| --------------------------------------- | ---------------------------------- | ------------------------------------------------------------------------------------- |
+| `TF_VAR_network_mode`                   | `firewall`                         | `firewall`, `proxy` or `cheap`; see Network modes                                     |
+| `TF_VAR_proxy_instance_type`            | `t4g.nano`                         | Egress proxy size in `proxy` mode                                                     |
+| `TF_VAR_extra_allowed_domains`          | `[]`                               | Extra egress domains, as a JSON list: `'[".crates.io"]'`                              |
+| `TF_VAR_alarm_topic_arn`                | none                               | SNS topic for alarms                                                                  |
+| `TF_VAR_bedrock_daily_cost_alarm_usd`   | `30`                               | Daily Bedrock spend alarm                                                             |
+| `TF_VAR_bedrock_usd_per_million_tokens` | Opus 5.5 list prices               | `'{input=4,output=20,cache_read=0.2,cache_write=5}'`; set your model's Bedrock prices |
+| `TF_VAR_name`, `TF_VAR_vpc_cidr`        | `better-every-day`, `10.42.0.0/16` | Resource name prefix and VPC range                                                    |
 
 1. Create the secrets above.
 2. Write your config file and check it: `uv run bed validate <config.yaml>`.
@@ -226,9 +230,9 @@ Configuration changes also refresh the Lambda environment so warm processes read
 
 Copy-ready pipelines: `examples/ci/github/deploy.yml` (copy to `.github/workflows/deploy.yml`) and `examples/ci/gitlab/.gitlab-ci.yml` (copy to the repo root). Both do the same:
 
-| Trigger | Jobs |
-|---|---|
-| Pull/merge request | lint, tests, `bed validate`, `terraform fmt -check`, then a read-only `terraform plan` |
+| Trigger                    | Jobs                                                                                                                                                                                                                    |
+| -------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Pull/merge request         | lint, tests, `bed validate`, `terraform fmt -check`, then a read-only `terraform plan`                                                                                                                                  |
 | Push to the default branch | the same checks, then create the ECR repositories (targeted apply), build and push both arm64 images tagged with the commit SHA (skipped when that tag already exists), save a plan, and apply it after manual approval |
 
 The GitHub workflow pins every action to a commit SHA: `actions/checkout` v4, `astral-sh/setup-uv` v6, `hashicorp/setup-terraform` v3, `aws-actions/configure-aws-credentials` v4, `actions/upload-artifact` v4 and `actions/download-artifact` v4. Update them with Dependabot or Renovate rather than switching back to tags. Only the jobs that assume an AWS role get `id-token: write`.
@@ -242,6 +246,7 @@ The saved plan (`tfplan`) is uploaded as a pipeline artifact for 5 days so the a
 The GitLab pipeline pins its tools as well: the Python and Docker images by digest, uv by version (`UV_VERSION`), and Terraform by version with the zip checked against HashiCorp's published `SHA256SUMS` (fetched from the same host, so it catches corruption and tampering in transit, not a compromised release server; add GPG verification of `SHA256SUMS.sig` if that matters to you). The GitHub workflow pins uv with `UV_VERSION` too. Update the digests and versions deliberately, together with the action SHAs.
 
 **One-time setup in AWS** (by hand or in your own bootstrap Terraform, before the first pipeline):
+
 1. An S3 bucket for state, versioned, with public access blocked.
 2. The connector secrets from Secrets.
 3. An IAM OIDC identity provider: `token.actions.githubusercontent.com` (GitHub) or `gitlab.com` / your GitLab host (GitLab), audience `sts.amazonaws.com`.
@@ -249,12 +254,13 @@ The GitLab pipeline pins its tools as well: the Python and Docker images by dige
 5. A **deploy role** that can create everything in `infra/terraform/aws` (simplest: `AdministratorAccess`; scope it down once it works) plus read and write on the state bucket.
 6. Trust policies, with `Federated` set to the provider from step 3 and `"StringEquals": {"<provider>:aud": "sts.amazonaws.com"}`, and these `sub` conditions (`StringLike`):
 
-| | Plan role | Deploy role |
-|---|---|---|
+|                                                    | Plan role                                                                     | Deploy role                                                                             |
+| -------------------------------------------------- | ----------------------------------------------------------------------------- | --------------------------------------------------------------------------------------- |
 | GitHub (`token.actions.githubusercontent.com:sub`) | `repo:<owner>/<repo>:pull_request`, `repo:<owner>/<repo>:ref:refs/heads/main` | `repo:<owner>/<repo>:ref:refs/heads/main`, `repo:<owner>/<repo>:environment:production` |
-| GitLab (`gitlab.com:sub`) | `project_path:<group>/<project>:ref_type:branch:ref:*` | `project_path:<group>/<project>:ref_type:branch:ref:main` |
+| GitLab (`gitlab.com:sub`)                          | `project_path:<group>/<project>:ref_type:branch:ref:*`                        | `project_path:<group>/<project>:ref_type:branch:ref:main`                               |
 
 On GitHub:
+
 - Protect `main` (Settings → Branches or Rulesets): require pull requests and block force pushes, because the deploy role trusts any workflow run on `main` without approval (the `images` job).
 - In the `production` environment, add required reviewers and set Deployment branches and tags to `main` only. Otherwise a workflow on any branch can use `environment: production`, and an approval would apply that branch's code with the deploy role.
 
