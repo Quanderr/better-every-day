@@ -145,6 +145,18 @@ export TF_VAR_region=<region> TF_VAR_config_path=$PWD/<config.yaml> \
        TF_VAR_worker_image_tag=<tag> TF_VAR_control_image_tag=<tag>
 ```
 
+Optional, set the same way if you need them:
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `TF_VAR_network_mode` | `firewall` | `firewall`, `proxy` or `cheap`; see Network modes |
+| `TF_VAR_proxy_instance_type` | `t4g.nano` | Egress proxy size in `proxy` mode |
+| `TF_VAR_extra_allowed_domains` | `[]` | Extra egress domains, as a JSON list: `'[".crates.io"]'` |
+| `TF_VAR_alarm_topic_arn` | none | SNS topic for alarms |
+| `TF_VAR_bedrock_daily_cost_alarm_usd` | `30` | Daily Bedrock spend alarm |
+| `TF_VAR_bedrock_usd_per_million_tokens` | Opus 5.5 list prices | `'{input=4,output=20,cache_read=0.2,cache_write=5}'`; set your model's Bedrock prices |
+| `TF_VAR_name`, `TF_VAR_vpc_cidr` | `better-every-day`, `10.42.0.0/16` | Resource name prefix and VPC range |
+
 1. Create the secrets above.
 2. Write your config file and check it: `uv run bed validate <config.yaml>`.
 3. Initialise and create the ECR repositories:
@@ -162,7 +174,8 @@ export TF_VAR_region=<region> TF_VAR_config_path=$PWD/<config.yaml> \
    docker push $WORKER_REPO:$TF_VAR_worker_image_tag && docker push $CONTROL_REPO:$TF_VAR_control_image_tag
    ```
 5. `terraform -chdir=infra/terraform/aws apply`.
-6. Smoke test with a manual run (see Operations) and watch the logs.
+6. In `proxy` mode, wait a few minutes for the instance to finish booting, then check it (see Operations: open a shell, read `cloud-init-output.log`, confirm `systemctl is-active nginx nftables`).
+7. Smoke test with a manual run (see Operations) and watch the logs. In `proxy` mode, check `egress.log` for blocked domains the repo needs and add them to `extra_allowed_domains`.
 
 The private subnets use the first two availability zones of the region by name. AgentCore supports only some AZ IDs per region; if the runtime is rejected for its subnets, check the supported AZ IDs in the AgentCore documentation.
 
@@ -171,6 +184,8 @@ Restrict who can create AgentCore runtimes in PUBLIC network mode with the IAM c
 ### Updates
 
 - Config only: edit the file and run `terraform apply` with the same image tags. The control Lambdas read the config on cold start, so a change takes effect on their next cold start (new Lambda versions are not published for a config-only change).
+- Network mode: change `network_mode` and `terraform apply` with the same image tags. Run `terraform plan` first and read what it destroys; switching away from `firewall` deletes the Network Firewall and its log group. Not during a run.
+- Upgrading an existing deployment to network modes: run `terraform plan` with the default `network_mode` first. It should show the firewall, NAT gateway and related resources as moved (from `moved.tf`), not replaced, plus the Bedrock token alarm replaced by `<name>-bedrock-daily-cost`. Anything else being replaced is a reason to stop and check.
 - Code: ECR tags are immutable, so build and push both images under a **new** tag, then `terraform apply` with the new tags. Avoid deploying while a run is in progress; a result that arrives later is still processed.
 
 ### Teardown
