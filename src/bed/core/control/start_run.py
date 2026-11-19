@@ -1,4 +1,3 @@
-import json
 import logging
 import re
 import secrets
@@ -53,15 +52,11 @@ def start_run(repo_name: str, deps: ControlDeps) -> RunRecord:
             allocation = min(allocation, repo.limits.cached_run_usd_budget)
         if repo.limits.total_usd_budget is not None:
             key = f"budget#{repo.name}#{repo.limits.budget_key}"
-            reserved = json.loads(deps.store.get_meta(key) or "{}")
-            remaining = round(repo.limits.total_usd_budget - sum(reserved.values()), 8)
-            if remaining <= 0:
+            allocation = deps.store.reserve_budget(key, run_id, allocation, repo.limits.total_usd_budget)
+            if allocation <= 0:
                 return finish("skipped_budget")
-            allocation = min(allocation, remaining)
             # Reservations are never refunded from untrusted worker-reported costs.
             # A lost result therefore cannot reopen the spending allowance.
-            reserved[run_id] = allocation
-            deps.store.put_meta(key, json.dumps(reserved))
         repo = repo.model_copy(update={"limits": repo.limits.model_copy(update={"usd_budget": allocation})})
     nonce = secrets.token_hex(16)
     payload, token_id = _worker_input(run_id, repo, open_prs, nonce, deps)

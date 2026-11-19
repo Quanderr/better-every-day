@@ -130,7 +130,10 @@ def handle_result(result: WorkerResult, deps: ControlDeps) -> RunRecord:
         deps.memory.put(repo.name, memory, run.run_id)
     if result.kind == "checkpoint":
         # A progress event must not finish the run or revoke its live clone token.
-        return run
+        progress = run.model_copy(update={"cost_usd": max(run.cost_usd, result.cost_usd),
+                                          "tokens_used": max(run.tokens_used, result.tokens_used)})
+        deps.store.put_run(progress)
+        return progress
     try:
         return _handle(run, result, repo, deps)
     finally:

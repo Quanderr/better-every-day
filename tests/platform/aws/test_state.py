@@ -64,3 +64,27 @@ def test_lease_is_exclusive_until_expiry(store):
     assert store.try_lease("start#acme/web", NOW, timedelta(minutes=5))
     assert not store.try_lease("start#acme/web", NOW + timedelta(minutes=1), timedelta(minutes=5))
     assert store.try_lease("start#acme/web", NOW + timedelta(minutes=6), timedelta(minutes=5))
+
+
+def test_budget_reservation_is_idempotent_and_capped(store):
+    assert store.reserve_budget("budget", "first", 3, 3.7) == 3
+    assert store.reserve_budget("budget", "first", 3, 3.7) == 3
+    assert store.reserve_budget("budget", "second", 3, 3.7) == 0.7
+    assert store.reserve_budget("budget", "third", 3, 3.7) == 0
+
+
+def test_budget_compare_and_swap_handles_an_overlapping_start(store, monkeypatch):
+    put = store.table.put_item
+    other = DynamoStateStore("bed")
+    raced = False
+
+    def racing_put(**kwargs):
+        nonlocal raced
+        if not raced:
+            raced = True
+            assert other.reserve_budget("budget", "other", 3, 3.7) == 3
+        return put(**kwargs)
+
+    monkeypatch.setattr(store.table, "put_item", racing_put)
+    assert store.reserve_budget("budget", "ours", 3, 3.7) == 0.7
+    assert other.reserve_budget("budget", "later", 3, 3.7) == 0

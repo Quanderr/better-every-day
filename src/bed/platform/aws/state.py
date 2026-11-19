@@ -1,4 +1,6 @@
+import json
 from datetime import datetime, timedelta
+from decimal import ROUND_DOWN, Decimal
 from typing import Any
 
 import boto3
@@ -70,6 +72,28 @@ class DynamoStateStore:
 
     def put_meta(self, key: str, value: str) -> None:
         self._put(META_PK, key, value)
+
+    def reserve_budget(self, key: str, run_id: str, requested: float, maximum: float) -> float:
+        for _ in range(20):
+            old = self.get_meta(key)
+            reservations = json.loads(old or "{}")
+            if run_id in reservations:
+                return float(reservations[run_id])
+            remaining = Decimal(str(maximum)) - sum(Decimal(str(v)) for v in reservations.values())
+            amount = min(Decimal(str(requested)), remaining).quantize(Decimal("0.00000001"), rounding=ROUND_DOWN)
+            if amount <= 0:
+                return 0
+            reservations[run_id] = float(amount)
+            options = {"ConditionExpression": "#data = :old", "ExpressionAttributeValues": {":old": old}} if old else {
+                "ConditionExpression": "attribute_not_exists(#data)"}
+            try:
+                self.table.put_item(Item={"pk": META_PK, "sk": key, "data": json.dumps(reservations)},
+                                    ExpressionAttributeNames={"#data": "data"}, **options)
+                return float(amount)
+            except ClientError as exc:
+                if exc.response["Error"]["Code"] != "ConditionalCheckFailedException":
+                    raise
+        raise RuntimeError("could not atomically reserve model budget")
 
     def try_lease(self, key: str, now: datetime, ttl: timedelta) -> bool:
         try:

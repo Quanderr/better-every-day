@@ -1,3 +1,4 @@
+import json
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
@@ -169,6 +170,17 @@ class FakeSecrets:
 
 
 class InMemoryStore:
+    def reserve_budget(self, key, run_id, requested, maximum):
+        reservations = json.loads(self.get_meta(key) or "{}")
+        if run_id in reservations:
+            return reservations[run_id]
+        amount = min(requested, round(maximum - sum(reservations.values()), 8))
+        if amount <= 0:
+            return 0
+        reservations[run_id] = amount
+        self.put_meta(key, json.dumps(reservations))
+        return amount
+
     def __init__(self) -> None:
         self.runs: dict[tuple[str, str], RunRecord] = {}
         self.findings: dict[tuple[str, str], Finding] = {}
