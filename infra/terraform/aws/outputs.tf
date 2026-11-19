@@ -17,3 +17,7 @@ output "table_name" {
 output "results_queue_url" {
   value = aws_sqs_queue.results.url
 }
+
+output "proxy_instance_id" {
+  value = one(aws_instance.proxy[*].id)
+}

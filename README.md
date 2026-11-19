@@ -20,7 +20,7 @@ src/bed/worker        shell, workspace, pipeline, AgentCore entrypoint
 src/bed/connectors    github, gitlab, linear, jira, slack, shared HTTP client
 src/bed/platform/aws  DynamoDB, Secrets Manager, SQS, AgentCore, Lambda handlers
 docker/               worker and control images (linux/arm64)
-infra/terraform/aws   VPC, firewall, runtime, Lambdas, table, queue, schedules
+infra/terraform/aws   VPC, firewall or egress proxy, runtime, Lambdas, table, queue, schedules
 config/               example configurations (GitHub + Linear, GitLab + Jira)
 ```
 
@@ -85,13 +85,57 @@ Create one JSON secret per connector in Secrets Manager, named as in `auth_secre
 ### Prerequisites
 
 - Terraform >= 1.9, `uv`, Docker with `linux/arm64` build support (buildx/QEMU on x86 hosts), AWS CLI with credentials for the target account.
-- A region where Bedrock AgentCore Runtime and AWS Network Firewall are available.
+- A region where Bedrock AgentCore Runtime is available, and AWS Network Firewall for the default `firewall` network mode.
 - Bedrock model access for the Anthropic model in `model.id`, granted in the Bedrock console (Anthropic models need the one-time use-case form). For a cross-region inference profile such as `us.…`, every region the profile routes to must allow it.
 - Terraform state is local by default (`*.tfstate` is gitignored). For anything beyond a trial, add a `backend.tf` with an S3 backend before the first apply; losing local state orphans every resource.
 
-### Approximate fixed cost
+### Approximate monthly cost
 
-Before any Bedrock tokens, the network stack costs roughly $700 per month at us-east-1 list prices: Network Firewall with 2 endpoints (about $575), 5 interface endpoints in 2 AZs (about $75), one NAT gateway (about $35), plus per-GB processing. Lambda, DynamoDB, SQS and AgentCore are billed per use. Check current AWS pricing for your region.
+Rough us-east-1 list-price estimate for the example config: 2 repos on weekdays (about 44 runs per month), Claude Opus 5.5 with prompt caching. Check current AWS and Bedrock pricing for your region.
+
+| Element | Basis | ~USD/month |
+|---|---|---|
+| Network Firewall | 2 endpoints × $0.395/h | 577 |
+| VPC interface endpoints | 5 endpoints × 2 AZs × $0.01/h | 73 |
+| NAT gateway + public IP | $0.045/h + $0.005/h | 37 |
+| Bedrock tokens (Opus 5.5, cached) | 0.6–1.2M tokens per run × 44 runs, about $3 per 1M tokens | 80–160 |
+| AgentCore Runtime | active CPU only, about $0.10–0.30 per run | 5–15 |
+| Firewall and NAT data processing | 1–2 GB per run × $0.11/GB | 5–10 |
+| CloudWatch logs and alarms | log ingestion $0.50/GB, cost alarm with 4 metrics | 3–10 |
+| Secrets Manager | 4 secrets × $0.40 | 2 |
+| Route 53 Resolver DNS Firewall | queries and domain lists | 1–2 |
+| ECR | 2–5 GB of images | <1 |
+| Lambda, DynamoDB (with PITR), SQS, S3, EventBridge | pay-per-use, low volume | <3 |
+| **Total** | | **~790–890** |
+
+- The network stack (about $690) is fixed and paid even when nothing runs; Network Firewall alone is about 70% of the bill.
+- Token cost assumes about 80% of input tokens are cache reads. Without caching it is about $190–370; with every run using its full `token_budget` it is about $250–300. The `bedrock_daily_cost_alarm_usd` alarm (default 30 USD per day) bounds a runaway.
+- Each additional run adds about $2–4 (tokens, AgentCore, traffic); the fixed part does not grow with repos or runs.
+- Other network modes (below): `proxy` brings the total to about $180–280 per month, `cheap` to about $140–240.
+
+### Network modes
+
+Choose how the worker's network is locked down with `-var network_mode=<mode>` (default `firewall`). All modes keep the private subnets, the Route 53 Resolver DNS Firewall, the free S3 gateway endpoint and the rest of the stack.
+
+| | `firewall` (default) | `proxy` | `cheap` |
+|---|---|---|---|
+| Egress path | AWS Network Firewall (2 AZs) → NAT gateway | One EC2 egress proxy (`proxy_instance_type`, default `t4g.nano`) with the NAT IP | NAT gateway |
+| VPC interface endpoints | Yes | Yes | No |
+| Fixed network cost | ~$690/month | ~$80/month | ~$40/month |
+| Outbound traffic from repo code | HTTPS to allowlisted domains, checked on the TLS server name | HTTPS (port 443) to allowlisted domains only; everything else is dropped | Anything, anywhere |
+| Allowlisted name sent to a raw IP | Passes (the firewall checks the name, not the IP) | Blocked: the proxy resolves the name itself and connects there, ignoring the original IP | Not applicable |
+| Plain HTTP and other ports | Dropped | Dropped | Allowed |
+| Worker role (Bedrock, SQS) works only | Through this VPC's endpoints | Through this VPC's endpoints | From the NAT gateway's public IP |
+| Bedrock and SQS traffic | PrivateLink | PrivateLink | Public AWS endpoints over TLS |
+| Availability | Managed, multi-AZ | Single instance in one AZ; EC2 auto-recovery only. Runs fail while it is down | Managed NAT gateway |
+| Egress log | `/better-every-day/network-firewall/alert` | `/var/log/nginx/egress.log` on the instance, read through Session Manager | None |
+| You operate | Nothing | The instance: OS updates (replace it to pick up a new AMI) | Nothing |
+
+**`proxy`** replaces Network Firewall and the NAT gateway with one Amazon Linux 2023 instance in the first public subnet. Private subnets route all traffic to it. nftables redirects HTTPS from the private subnets to nginx, which reads the TLS server name, matches it against the same allowlist (`extra_allowed_domains` included) and connects to that name. IP forwarding is off, so anything nginx does not proxy is dropped. The instance has no SSH key and requires IMDSv2; shell access is through SSM Session Manager only (its role has `AmazonSSMManagedInstanceCore` and nothing else). Anyone in the account allowed `ssm:StartSession` on it gets root on the proxy and can change the allowlist, so limit that permission. A change to the allowlist replaces the instance, which briefly cuts egress, so do not apply during a run. The proxy itself has unrestricted outbound access for package installs.
+
+**`cheap`** removes Network Firewall and the interface endpoints. Use it only for repositories you trust whose dependencies are locked and reviewed, and whose source you could accept leaking: a malicious dependency's install script, or a test the bot edited, can send the clone and anything else in the session to any server. Session credentials are short-lived and work only from the NAT IP, so stolen credentials are of little use elsewhere; the source code is the asset at risk.
+
+Switching modes is an in-place `terraform apply` with the same image tags. Avoid it while a run is in progress, because the worker's routes change under it.
 
 ### First deploy
 
@@ -137,7 +181,13 @@ Restrict who can create AgentCore runtimes in PUBLIC network mode with the IAM c
 
 - Start a run now: `aws lambda invoke --function-name better-every-day-schedule --cli-binary-format raw-in-base64-out --payload '{"action":"run","repo":"<owner/repo>"}' /dev/stdout`.
 - Send the summary now: same command with `'{"action":"summary"}'`.
-- Logs: `/aws/lambda/better-every-day-schedule`, `/aws/lambda/better-every-day-result`, the worker under `/aws/bedrock-agentcore/runtimes/`, blocked egress in `/better-every-day/network-firewall/alert`.
+- `proxy` network mode:
+  - Open a shell (needs the AWS CLI Session Manager plugin): `aws ssm start-session --target $(terraform -chdir=infra/terraform/aws output -raw proxy_instance_id)`.
+  - Allowed and blocked connections: `sudo tail -f /var/log/nginx/egress.log` in that shell. Blocked ones show upstream `127.0.0.1:9`; connections without a server name are blocked too.
+  - Check the first boot: `sudo cat /var/log/cloud-init-output.log` in that shell, or without a shell `aws ec2 get-console-output --instance-id <id> --latest --output text`.
+  - Patch the OS: `terraform apply -replace='aws_instance.proxy[0]'` with your usual variables. The AMI is fixed at creation, so this is how a new Amazon Linux 2023 release is picked up. Egress is down for a minute or two; do it between runs.
+  - A run that fails while cloning or installing in `proxy` mode with no firewall alert usually means the proxy is down or the domain is missing from the allowlist.
+- Logs: `/aws/lambda/better-every-day-schedule`, `/aws/lambda/better-every-day-result`, the worker under `/aws/bedrock-agentcore/runtimes/`, blocked egress in `/better-every-day/network-firewall/alert` (`firewall` mode only).
 - Alarms: `better-every-day-results-dlq-not-empty` and `better-every-day-bedrock-daily-cost`. Pass `-var alarm_topic_arn=<SNS topic ARN>` to be notified; the alarms exist either way.
 - Dead-letter queue: results that failed processing 5 times land in `better-every-day-results-dlq` (kept 14 days). Check the result Lambda logs for the cause, fix it, then redrive to the main queue from the SQS console or with `aws sqs start-message-move-task --source-arn <dlq arn>`. Results older than 24 hours after a run timed out are ignored.
 - Findings stuck in `publishing` for over an hour, or that failed to publish, appear in the daily summary; a failed publish is retried by the next run that finds the same issue, reusing its ticket.
@@ -148,9 +198,9 @@ Names above assume the default `-var name=better-every-day`.
 
 Repo install and test commands get only an allowlisted environment (`PATH`, `HOME`, locale, CA bundle, `MISE_*`). VPC endpoints carry policies limited to this account, the results queue and ECR image layers.
 
-Worker DNS is limited by a Route 53 Resolver DNS Firewall to the same allowlist plus `amazonaws.com`, and Bedrock and SQS are reached through VPC endpoints; the worker role only works from those endpoints. Pass `-var bedrock_daily_cost_alarm_usd=<usd>` to tune the daily Bedrock cost alarm (default 30 USD). The estimate multiplies Bedrock token metrics (input, output, cache read, cache write) by `bedrock_usd_per_million_tokens`, which defaults to Claude Opus 5.5 list prices; set it to your model's Bedrock prices for your region.
+Worker DNS is limited by a Route 53 Resolver DNS Firewall to the same allowlist plus `amazonaws.com`, and Bedrock and SQS are reached through VPC endpoints; the worker role only works from those endpoints (in `cheap` mode: only from the NAT gateway's public IP). Pass `-var bedrock_daily_cost_alarm_usd=<usd>` to tune the daily Bedrock cost alarm (default 30 USD). The estimate multiplies Bedrock token metrics (input, output, cache read, cache write) by `bedrock_usd_per_million_tokens`, which defaults to Claude Opus 5.5 list prices; set it to your model's Bedrock prices for your region.
 
-Worker egress is limited by AWS Network Firewall to the domains in `infra/terraform/aws/firewall.tf` plus `extra_allowed_domains`, matched on the TLS server name. This does not stop a process that sends an allowlisted server name to a raw IP address, and allowlisted public hosts (GitHub, npm, PyPI) can still receive data from repo code; TLS inspection is not configured. Blocked connections appear in the `/better-every-day/network-firewall/alert` log group.
+Worker egress is limited by AWS Network Firewall to the domains in `infra/terraform/aws/firewall.tf` plus `extra_allowed_domains`, matched on the TLS server name. This does not stop a process that sends an allowlisted server name to a raw IP address, and allowlisted public hosts (GitHub, npm, PyPI) can still receive data from repo code; TLS inspection is not configured. Blocked connections appear in the `/better-every-day/network-firewall/alert` log group. The `proxy` network mode replaces this layer and also blocks the raw-IP case; `cheap` removes it. See Network modes under Deploy.
 
 The built-in allowlist covers GitHub, gitlab.com, npm/yarn, PyPI, RubyGems, Maven Central, Gradle, the Go module proxy, mise, nodejs.org, java.net, go.dev and ruby-lang.org. Other ecosystems (for example Rust: `static.rust-lang.org`, `.crates.io`) and private registries need `-var 'extra_allowed_domains=[...]'`; a domain starting with `.` matches subdomains.
 

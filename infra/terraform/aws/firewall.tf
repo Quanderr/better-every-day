@@ -26,12 +26,13 @@ locals {
   ))
 
   firewall_endpoints = {
-    for state in aws_networkfirewall_firewall.main.firewall_status[0].sync_states :
+    for state in flatten(aws_networkfirewall_firewall.main[*].firewall_status[0].sync_states) :
     state.availability_zone => state.attachment[0].endpoint_id
   }
 }
 
 resource "aws_networkfirewall_rule_group" "egress_allowlist" {
+  count    = local.use_firewall ? 1 : 0
   name     = "${var.name}-egress-allowlist"
   type     = "STATEFUL"
   capacity = 200
@@ -61,7 +62,8 @@ resource "aws_networkfirewall_rule_group" "egress_allowlist" {
 }
 
 resource "aws_networkfirewall_firewall_policy" "main" {
-  name = "${var.name}-egress"
+  count = local.use_firewall ? 1 : 0
+  name  = "${var.name}-egress"
 
   firewall_policy {
     stateless_default_actions          = ["aws:forward_to_sfe"]
@@ -74,15 +76,16 @@ resource "aws_networkfirewall_firewall_policy" "main" {
 
     stateful_rule_group_reference {
       priority     = 100
-      resource_arn = aws_networkfirewall_rule_group.egress_allowlist.arn
+      resource_arn = aws_networkfirewall_rule_group.egress_allowlist[0].arn
     }
   }
 }
 
 resource "aws_networkfirewall_firewall" "main" {
+  count               = local.use_firewall ? 1 : 0
   name                = var.name
   vpc_id              = aws_vpc.main.id
-  firewall_policy_arn = aws_networkfirewall_firewall_policy.main.arn
+  firewall_policy_arn = aws_networkfirewall_firewall_policy.main[0].arn
 
   dynamic "subnet_mapping" {
     for_each = aws_subnet.firewall[*].id
@@ -93,19 +96,21 @@ resource "aws_networkfirewall_firewall" "main" {
 }
 
 resource "aws_cloudwatch_log_group" "firewall" {
+  count             = local.use_firewall ? 1 : 0
   name              = "/${var.name}/network-firewall/alert"
   retention_in_days = 30
 }
 
 resource "aws_networkfirewall_logging_configuration" "main" {
-  firewall_arn = aws_networkfirewall_firewall.main.arn
+  count        = local.use_firewall ? 1 : 0
+  firewall_arn = aws_networkfirewall_firewall.main[0].arn
 
   logging_configuration {
     log_destination_config {
       log_type             = "ALERT"
       log_destination_type = "CloudWatchLogs"
       log_destination = {
-        logGroup = aws_cloudwatch_log_group.firewall.name
+        logGroup = aws_cloudwatch_log_group.firewall[0].name
       }
     }
   }

@@ -1,5 +1,19 @@
 locals {
   inference_profile_arn = "arn:aws:bedrock:${var.region}:${local.account_id}:inference-profile/${local.cfg.model.id}"
+  bedrock_network_lock = local.use_endpoints ? {
+    test     = "StringEquals"
+    variable = "aws:SourceVpce"
+    values   = [lookup(local.endpoint_ids, "bedrock-runtime", "")]
+    } : {
+    test     = "IpAddress"
+    variable = "aws:SourceIp"
+    values   = ["${aws_eip.nat.public_ip}/32"]
+  }
+  sqs_network_lock = local.use_endpoints ? {
+    test     = "StringEquals"
+    variable = "aws:SourceVpce"
+    values   = [lookup(local.endpoint_ids, "sqs", "")]
+  } : local.bedrock_network_lock
   secret_arns = [
     for name in local.connector_secrets : "arn:aws:secretsmanager:${var.region}:${local.account_id}:secret:${name}-??????"
   ]
@@ -26,9 +40,9 @@ data "aws_iam_policy_document" "worker" {
     actions   = ["bedrock:InvokeModel", "bedrock:InvokeModelWithResponseStream"]
     resources = [local.inference_profile_arn]
     condition {
-      test     = "StringEquals"
-      variable = "aws:SourceVpce"
-      values   = [aws_vpc_endpoint.interface["bedrock-runtime"].id]
+      test     = local.bedrock_network_lock.test
+      variable = local.bedrock_network_lock.variable
+      values   = local.bedrock_network_lock.values
     }
   }
 
@@ -42,9 +56,9 @@ data "aws_iam_policy_document" "worker" {
       values   = [local.inference_profile_arn]
     }
     condition {
-      test     = "StringEquals"
-      variable = "aws:SourceVpce"
-      values   = [aws_vpc_endpoint.interface["bedrock-runtime"].id]
+      test     = local.bedrock_network_lock.test
+      variable = local.bedrock_network_lock.variable
+      values   = local.bedrock_network_lock.values
     }
   }
 
@@ -53,9 +67,9 @@ data "aws_iam_policy_document" "worker" {
     actions   = ["sqs:SendMessage"]
     resources = [aws_sqs_queue.results.arn]
     condition {
-      test     = "StringEquals"
-      variable = "aws:SourceVpce"
-      values   = [aws_vpc_endpoint.interface["sqs"].id]
+      test     = local.sqs_network_lock.test
+      variable = local.sqs_network_lock.variable
+      values   = local.sqs_network_lock.values
     }
   }
 

@@ -19,6 +19,21 @@ variable "control_image_tag" {
   type = string
 }
 
+variable "network_mode" {
+  type    = string
+  default = "firewall"
+
+  validation {
+    condition     = contains(["firewall", "proxy", "cheap"], var.network_mode)
+    error_message = "network_mode must be firewall, proxy or cheap."
+  }
+}
+
+variable "proxy_instance_type" {
+  type    = string
+  default = "t4g.nano"
+}
+
 variable "vpc_cidr" {
   type    = string
   default = "10.42.0.0/16"
