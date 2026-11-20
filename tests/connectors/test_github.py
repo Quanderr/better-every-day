@@ -61,6 +61,28 @@ def test_clone_url(gh):
     assert gh.clone_url("acme/web") == "https://github.com/acme/web.git"
 
 
+@pytest.mark.parametrize(("api_url", "expected"), [
+    ("https://ghe.corp.example.com/api/v3", "https://ghe.corp.example.com/acme/web.git"),
+    ("https://ghe.corp.example.com/api/v3/", "https://ghe.corp.example.com/acme/web.git"),
+    ("https://corp.example.com/github/api/v3", "https://corp.example.com/github/acme/web.git"),
+    ("https://api.acme.ghe.com", "https://acme.ghe.com/acme/web.git"),
+    ("https://api.github.com/", "https://github.com/acme/web.git"),
+])
+def test_clone_url_follows_api_url(rsa_pem, api_url, expected):
+    conn = create({"app_id": "7", "private_key": rsa_pem, "installation_id": "42"}, {"api_url": api_url})
+    assert conn.clone_url("acme/web") == expected
+
+
+def test_enterprise_server_api_calls_use_api_url(rsa_pem):
+    base = "https://ghe.corp.example.com/api/v3"
+    conn = create({"app_id": "7", "private_key": rsa_pem, "installation_id": "42"}, {"api_url": base})
+    with respx.mock() as mock:
+        mock.post(f"{base}/app/installations/42/access_tokens").respond(
+            201, json={"token": "inst-token", "expires_at": "2099-01-01T00:00:00Z"})
+        mock.get(f"{base}/repos/acme/web/git/ref/heads/main").respond(200, json={"object": {"sha": "abc"}})
+        assert conn.find_branch("acme/web", "main") == "abc"
+
+
 def test_read_file(gh, api):
     route = api.get(f"{R}/contents/src/a.py", params={"ref": "abc"}).respond(200, text="a = 1\n")
     assert gh.read_file("acme/web", "abc", "src/a.py") == "a = 1\n"

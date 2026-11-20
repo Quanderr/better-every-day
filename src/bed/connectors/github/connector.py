@@ -13,15 +13,25 @@ from bed.core.ports import BotPr, PrRef, ReadToken, VcsError
 DEFAULT_MODE = "100644"
 TRUSTED_ASSOCIATIONS = frozenset({"OWNER", "MEMBER", "COLLABORATOR"})
 TOKEN_REFRESH_MARGIN = timedelta(minutes=5)
+DEFAULT_API_URL = "https://api.github.com"
+ENTERPRISE_SERVER_API_SUFFIX = "/api/v3"
+
+
+def web_url_for(api_url: str) -> str:
+    base = api_url.rstrip("/")
+    if base.endswith(ENTERPRISE_SERVER_API_SUFFIX):
+        return base.removesuffix(ENTERPRISE_SERVER_API_SUFFIX)
+    return base.replace("://api.", "://", 1)
 
 
 class GitHubConnector:
-    def __init__(self, app_id: str, private_key: str, installation_id: str, api_url: str = "https://api.github.com",
+    def __init__(self, app_id: str, private_key: str, installation_id: str, api_url: str = DEFAULT_API_URL,
                  client: httpx.Client | None = None):
         self.app_id = app_id
         self.private_key = private_key
         self.installation_id = installation_id
         self.http = HttpApi(api_url, {"X-GitHub-Api-Version": "2022-11-28"}, VcsError, client=client)
+        self.web_url = web_url_for(api_url)
         self._token: tuple[str, datetime] | None = None
 
     def _app_jwt(self) -> str:
@@ -49,7 +59,7 @@ class GitHubConnector:
         return self.http.paginate(path, params, headers=headers)
 
     def clone_url(self, repo: str) -> str:
-        return f"https://github.com/{repo}.git"
+        return f"{self.web_url}/{repo}.git"
 
     def read_token(self, repo: str) -> ReadToken:
         token, _ = self._installation_token({"repositories": [repo.split("/", 1)[1]],
@@ -162,5 +172,5 @@ def create(secret: dict[str, str], options: dict[str, str]) -> GitHubConnector:
         app_id=secret["app_id"],
         private_key=secret["private_key"],
         installation_id=secret["installation_id"],
-        api_url=options.get("api_url", "https://api.github.com"),
+        api_url=options.get("api_url", DEFAULT_API_URL),
     )
