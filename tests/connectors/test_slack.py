@@ -83,3 +83,9 @@ def test_section_text_under_slack_limit():
 def test_render_stuck_section():
     t = text(render(Summary(stuck=[make_finding("fp", status="publishing", title="Half done")])))
     assert "Stuck publishing" in t and "Half done" in t
+
+
+def test_render_without_ticket_omits_ticket_part():
+    finding = make_finding("fp9", title="Fix 9", pr_url="https://gh/pull/9", pr_number=9)
+    t = text(render(Summary(opened=[finding])))
+    assert "<https://gh/pull/9|Fix 9> · acme/web\"" in t

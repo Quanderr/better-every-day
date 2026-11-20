@@ -46,23 +46,28 @@ COMMIT_TYPE: dict[Category, str] = {
 }
 
 
-def branch_name(ticket_id: str, title: str) -> str:
+def branch_name(prefix: str, title: str) -> str:
     slug = re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")[:BRANCH_TITLE_MAX].rstrip("-")
-    return f"{ticket_id}-{slug}"
+    return f"{prefix}-{slug}"
+
+
+def ticketless_branch_prefix(fingerprint: str) -> str:
+    return f"bed-{fingerprint[:8]}"
 
 
 def _scrub(text: str) -> str:
     return CLOSING.sub(lambda m: m.group(1) + ZW, TRAILER.sub("", CI_SKIP.sub("", text)))
 
 
-def commit_subject(ticket_id: str, candidate: Candidate) -> str:
+def commit_subject(ticket_id: str | None, candidate: Candidate) -> str:
     title = " ".join(_scrub(candidate.title).split())
     title = title[:1].lower() + title[1:]
-    subject = f"[{ticket_id}] {COMMIT_TYPE[candidate.category]}: {title}"
+    prefix = f"[{ticket_id}] " if ticket_id else ""
+    subject = f"{prefix}{COMMIT_TYPE[candidate.category]}: {title}"
     return subject[:SUBJECT_MAX].rstrip()
 
 
-def commit_message(ticket_id: str, candidate: Candidate, summary: str) -> str:
+def commit_message(ticket_id: str | None, candidate: Candidate, summary: str) -> str:
     return f"{commit_subject(ticket_id, candidate)}\n\n{_scrub(summary).strip()}"
 
 
@@ -88,18 +93,19 @@ def ticket_body(result: FixResult) -> str:
     )
 
 
-def pr_body(result: FixResult, ticket: TicketRef, repo: RepoConfig) -> str:
+def pr_body(result: FixResult, ticket: TicketRef | None, repo: RepoConfig) -> str:
     c = result.candidate
     if repo.verify.mode == "ci":
         verification = "Not run locally; validated by CI."
     else:
         steps = ([repo.verify.install] if repo.verify.install else []) + repo.verify.commands
         verification = "\n".join(f"- `{cmd}` passed" for cmd in steps)
+    ticket_section = f"## Ticket\n[{ticket.id}]({ticket.url})\n\n" if ticket else ""
     return (
         f"## What\n{neutralise(result.summary)}\n\n"
         f"## Why\n{fenced(c.evidence)}\n\n{neutralise(c.rationale)}\n\n"
         f"## Verification\n{verification}\n\n"
-        f"## Ticket\n[{ticket.id}]({ticket.url})\n\n"
+        f"{ticket_section}"
         f"Opened automatically by better-every-day.\n"
     )
 
@@ -235,25 +241,27 @@ def publish_one(result: FixResult, base_sha: str, repo: RepoConfig, run_id: str,
         deps.store.put_finding(updated)
         return updated
 
-    if not finding.ticket_id:
+    if tracker and repo.tracker_project and not finding.ticket_id:
         ticket = tracker.find_ticket(repo.tracker_project, result.fingerprint) or tracker.create_ticket(
             repo.tracker_project, c.title, ticket_body(result), result.fingerprint
         )
         finding = save(ticket_id=ticket.id, ticket_url=ticket.url)
-    ticket = TicketRef(id=finding.ticket_id, url=finding.ticket_url or "")
-    branch = finding.branch or branch_name(ticket.id, c.title)
+    ticket_id = finding.ticket_id
+    ticket = TicketRef(id=ticket_id, url=finding.ticket_url or "") if ticket_id else None
+    branch = finding.branch or branch_name(ticket_id or ticketless_branch_prefix(result.fingerprint), c.title)
     if vcs.find_branch(repo.name, branch) is None:
-        vcs.push_branch(repo.name, branch, base_sha, commit_message(ticket.id, c, result.summary), result.changes)
+        vcs.push_branch(repo.name, branch, base_sha, commit_message(ticket_id, c, result.summary), result.changes)
     if finding.branch != branch:
         finding = save(branch=branch)
     if finding.pr_number is None:
         pr = vcs.find_pr(repo.name, branch) or vcs.open_pr(
-            repo.name, repo.base_branch, branch, commit_subject(ticket.id, c), pr_body(result, ticket, repo),
+            repo.name, repo.base_branch, branch, commit_subject(ticket_id, c), pr_body(result, ticket, repo),
             [BOT_LABEL],
         )
         finding = save(pr_number=pr.number, pr_url=pr.url)
     vcs.add_labels(repo.name, finding.pr_number, [BOT_LABEL])
-    tracker.link_pr(ticket.id, finding.pr_url or "", commit_subject(ticket.id, c))
+    if tracker and ticket_id:
+        tracker.link_pr(ticket_id, finding.pr_url or "", commit_subject(ticket_id, c))
     return save(status="published", reason=None)
 
 

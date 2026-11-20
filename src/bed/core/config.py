@@ -98,8 +98,14 @@ def _check(cfg: AppConfig) -> list[str]:
         seen.add(repo.name)
         if repo.vcs not in cfg.vcs:
             errors.append(f"{where}: unknown vcs connector {repo.vcs!r}")
-        if repo.tracker not in cfg.tracker:
-            errors.append(f"{where}: unknown tracker connector {repo.tracker!r}")
+        if repo.tracker is None:
+            if repo.tracker_project is not None:
+                errors.append(f"{where}: tracker_project requires tracker")
+        else:
+            if repo.tracker not in cfg.tracker:
+                errors.append(f"{where}: unknown tracker connector {repo.tracker!r}")
+            if not repo.tracker_project:
+                errors.append(f"{where}: tracker_project required with tracker")
         errors.extend(_check_schedule(where, repo.schedule, repo.timezone))
         if repo.verify.mode == "sandbox" and not repo.verify.commands:
             errors.append(f"{where}: verify.commands required in sandbox mode")

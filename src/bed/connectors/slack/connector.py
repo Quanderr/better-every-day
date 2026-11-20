@@ -23,7 +23,10 @@ def _link(url: str | None, label: str) -> str:
 
 
 def _finding_line(f: Finding) -> str:
-    return f"{_link(f.pr_url, f.title)} · {f.repo} · {_link(f.ticket_url, f.ticket_id or '')}"
+    parts = [_link(f.pr_url, f.title), f.repo]
+    if f.ticket_id:
+        parts.append(_link(f.ticket_url, f.ticket_id))
+    return " · ".join(parts)
 
 
 def _section(title: str, lines: list[str]) -> list[dict[str, Any]]:

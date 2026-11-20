@@ -23,6 +23,8 @@ def with_repo_limits(**limits):
 
 unknown_vcs_ref = _mutate(lambda d: d["repos"][0].update(vcs="nope"))
 unknown_tracker_ref = _mutate(lambda d: d["repos"][0].update(tracker="nope"))
+project_without_tracker = _mutate(lambda d: d["repos"][0].pop("tracker"))
+tracker_without_project = _mutate(lambda d: d["repos"][0].pop("tracker_project"))
 unknown_notifier_ref = _mutate(lambda d: d["notifications"].update(notifier="nope"))
 bad_cron = _mutate(lambda d: d["repos"][0].update(schedule="not a cron"))
 bad_timezone = _mutate(lambda d: d["repos"][0].update(timezone="Mars/Olympus"))
@@ -66,6 +68,8 @@ def test_unknown_repo_lookup_raises():
     [
         (unknown_vcs_ref, "unknown vcs connector"),
         (unknown_tracker_ref, "unknown tracker connector"),
+        (project_without_tracker, "tracker_project requires tracker"),
+        (tracker_without_project, "tracker_project required with tracker"),
         (unknown_notifier_ref, "unknown notifier"),
         (bad_cron, "invalid schedule"),
         (bad_timezone, "invalid timezone"),
@@ -142,3 +146,18 @@ def test_daily_budget_requires_prices_but_unlimited_does_not():
         load_config(text)
     text = _mutate(lambda d: d["defaults"]["limits"].update(daily_usd_budget=None))(text)
     load_config(text)
+
+
+def test_no_tracker_example_valid():
+    cfg = load_config((Path(__file__).parents[2] / "config" / "example-no-tracker.yaml").read_text())
+    repo = cfg.repo("acme/web")
+    assert cfg.tracker == {} and repo.tracker is None and repo.tracker_project is None
+
+
+def test_tracker_optional_per_repo():
+    def drop(d):
+        d["repos"][0].pop("tracker")
+        d["repos"][0].pop("tracker_project")
+
+    cfg = load_config(_mutate(drop)(EXAMPLE))
+    assert cfg.repo("acme/web").tracker is None and cfg.repo("acme/api").tracker == "main-linear"

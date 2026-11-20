@@ -1,6 +1,6 @@
 # better-every-day
 
-A self-hosted service that makes selected repositories a little better every day. It scans a repo and saves its understanding and findings in persistent AgentCore Memory, so scheduled runs can work through small, real problems without repeating exploration. Once the backlog is exhausted, it explores again. Each fix runs in a sandbox, passes the repo's own checks, gets a ticket and becomes a pull request. Humans only review. A daily Slack message lists what was opened.
+A self-hosted service that makes selected repositories a little better every day. It scans a repo and saves its understanding and findings in persistent AgentCore Memory, so scheduled runs can work through small, real problems without repeating exploration. Once the backlog is exhausted, it explores again. Each fix runs in a sandbox, passes the repo's own checks, gets a ticket (when a tracker is configured) and becomes a pull request. Humans only review. A daily Slack message lists what was opened.
 
 ## Architecture
 
@@ -24,20 +24,20 @@ src/bed/connectors    github, gitlab, linear, jira, slack, shared HTTP client
 src/bed/platform/aws  DynamoDB, Secrets Manager, SQS, AgentCore Runtime and Memory, Lambda handlers
 docker/               worker and control images (linux/arm64)
 infra/terraform/aws   VPC, firewall or egress proxy, runtime, memory, Lambdas, table, queue, schedules
-config/               example configurations (GitHub + Linear, GitLab + Jira)
+config/               example configurations (GitHub + Linear, GitLab + Jira, no tracker)
 examples/ci/          copy-ready GitHub Actions and GitLab CI deploy pipelines
 ```
 
 ## Configuration
 
-One YAML file, validated with `uv run bed validate <path>` and again at `terraform plan`. Unknown keys are errors. See `config/example.yaml` (GitHub, Linear, Slack) and `config/example-gitlab-jira.yaml` (GitLab, Jira, Slack).
+One YAML file, validated with `uv run bed validate <path>` and again at `terraform plan`. Unknown keys are errors. See `config/example.yaml` (GitHub, Linear, Slack), `config/example-gitlab-jira.yaml` (GitLab, Jira, Slack) and `config/example-no-tracker.yaml` (GitHub only, no tickets).
 
 | Key                                                                                             | Meaning                                                                                                                                                     | Default              |
 | ----------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------- |
 | `model.provider`                                                                                | Model provider name                                                                                                                                         | required (`bedrock`) |
 | `model.id`                                                                                      | Bedrock inference profile id                                                                                                                                | required             |
 | `connectors.vcs.<name>`                                                                         | `type: github` or `gitlab`, `auth_secret: <Secrets Manager name>`, optional `api_url` (self-hosted GitLab; see Limits for GitHub Enterprise)                |                      |
-| `connectors.tracker.<name>`                                                                     | `type: linear` or `jira`, `auth_secret`; Jira also needs `url` and takes optional `issue_type` (default `Task`)                                             |                      |
+| `connectors.tracker.<name>`                                                                     | Optional. `type: linear` or `jira`, `auth_secret`; Jira also needs `url` and takes optional `issue_type` (default `Task`)                                   |                      |
 | `connectors.notifier.<name>`                                                                    | `type: slack`, `auth_secret`, `channel`                                                                                                                     |                      |
 | `notifications.notifier`                                                                        | Notifier used for the daily summary                                                                                                                         | none: no summary     |
 | `notifications.summary_schedule`                                                                | 5-field cron                                                                                                                                                |                      |
@@ -52,8 +52,8 @@ One YAML file, validated with `uv run bed validate <path>` and again at `terrafo
 | `defaults.limits.timeout_minutes`                                                               | Wall-clock per run                                                                                                                                          | 60                   |
 | `defaults.base_branch`, `defaults.verify`, `defaults.exclude_paths`, `defaults.protected_paths` | Defaults for the matching `repos[]` keys; a repo value replaces the default, except `limits` (merged key by key) and `protected_paths` (lists concatenated) |                      |
 | `repos[].name`                                                                                  | `owner/repo`                                                                                                                                                | required             |
-| `repos[].vcs`, `repos[].tracker`                                                                | Connector names                                                                                                                                             | required             |
-| `repos[].tracker_project`                                                                       | Linear team key or Jira project key                                                                                                                         | required             |
+| `repos[].vcs`                                                                                   | VCS connector name                                                                                                                                          | required             |
+| `repos[].tracker`, `repos[].tracker_project`                                                    | Tracker connector name and Linear team key or Jira project key; set both or neither. Without them no ticket is created                                      | none: no tickets     |
 | `repos[].schedule`, `repos[].timezone`                                                          | 5-field cron and IANA timezone; must not restrict both day-of-month and day-of-week, no day-of-week steps or wrapping ranges (EventBridge limits)           | required             |
 | `repos[].base_branch`                                                                           | Branch to clone and target                                                                                                                                  | `main`               |
 | `repos[].verify.mode`                                                                           | `sandbox` runs checks in the worker; `ci` leaves them to the repo's CI                                                                                      | `sandbox`            |

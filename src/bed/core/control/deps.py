@@ -37,7 +37,9 @@ class ControlDeps:
     def vcs(self, repo: RepoConfig) -> VcsConnector:
         return self._connector("bed.vcs", repo.vcs)
 
-    def tracker(self, repo: RepoConfig) -> TrackerConnector:
+    def tracker(self, repo: RepoConfig) -> TrackerConnector | None:
+        if repo.tracker is None:
+            return None
         return self._connector("bed.tracker", repo.tracker)
 
     def notifier(self) -> NotifierConnector | None:

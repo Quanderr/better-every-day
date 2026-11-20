@@ -34,8 +34,9 @@ def _reconcile(finding: Finding, repo: RepoConfig, deps: ControlDeps) -> None:
             _settle(finding, pr, repo, deps)
             return
         vcs.add_labels(repo.name, pr.number, [BOT_LABEL])
-        if finding.ticket_id:
-            deps.tracker(repo).link_pr(finding.ticket_id, finding.pr_url or pr.url, finding.title)
+        tracker = deps.tracker(repo)
+        if tracker and finding.ticket_id:
+            tracker.link_pr(finding.ticket_id, finding.pr_url or pr.url, finding.title)
     except Exception:
         log.exception("could not reconcile finding %s", finding.fingerprint)
         return

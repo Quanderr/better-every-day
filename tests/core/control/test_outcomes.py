@@ -84,3 +84,16 @@ def test_publish_failed_reconcile_error_leaves_finding():
     deps.fake_vcs.fail_next("add_labels")
     sync_outcomes(deps.config.repo("acme/web"), deps)
     assert deps.store.get_finding("acme/web", "fp1").status == "publish_failed"
+
+
+def test_reconcile_without_tracker_skips_link():
+    config = example_config()
+    repos = [r.model_copy(update={"tracker": None, "tracker_project": None}) for r in config.repos]
+    deps = fake_deps(config.model_copy(update={"repos": repos, "tracker": {}}))
+    deps.store.put_finding(make_finding("fp1", status="publish_failed", pr_number=7, ticket_id="WEB-1",
+                                        pr_url="u7"))
+    deps.fake_vcs.bot_prs["acme/web"] = []
+    deps.fake_vcs.prs_by_number[("acme/web", 7)] = BotPr(number=7, url="u7", state="open")
+    sync_outcomes(deps.config.repo("acme/web"), deps)
+    assert deps.store.get_finding("acme/web", "fp1").status == "published"
+    assert deps.fake_tracker.links == []

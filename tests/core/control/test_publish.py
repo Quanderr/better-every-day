@@ -6,6 +6,7 @@ from helpers import example_config, make_candidate, make_finding
 from bed.core.control.publish import (
     branch_name,
     commit_message,
+    commit_subject,
     handle_result,
     pr_body,
     publish_one,
@@ -414,3 +415,40 @@ def test_commit_message_sanitised():
     assert "[skip ci]" not in lowered and "[ci skip]" not in lowered and "skip-checks" not in lowered
     assert "signed-off-by" not in lowered and not re.search(r"(?i)closes\s+#4", body)
     assert body.startswith("Guard None.")
+
+
+def started_without_tracker():
+    config = example_config()
+    repos = [r.model_copy(update={"tracker": None, "tracker_project": None}) for r in config.repos]
+    deps = fake_deps(config.model_copy(update={"repos": repos, "tracker": {}}))
+    return deps, start_run("acme/web", deps)
+
+
+def test_publish_without_tracker_skips_ticket():
+    deps, run = started_without_tracker()
+    out = handle_result(ok_result(run, [fixed()]), deps)
+    assert deps.fake_tracker.created == [] and deps.fake_tracker.links == []
+    pushed = deps.fake_vcs.pushed[0]
+    assert pushed.branch == f"bed-{FP[:8]}-handle-missing-user"
+    assert pushed.message.startswith("fix: handle missing user\n\n")
+    opened = deps.fake_vcs.opened[0]
+    assert opened.title == "fix: handle missing user" and "## Ticket" not in opened.body
+    f = deps.store.get_finding("acme/web", FP)
+    assert f.status == "published" and f.pr_number == 1 and f.ticket_id is None
+    assert out.status == "ok"
+
+
+def test_duplicate_delivery_without_tracker_publishes_once():
+    deps, run = started_without_tracker()
+    handle_result(ok_result(run, [fixed()]), deps)
+    handle_result(ok_result(run, [fixed()]), deps)
+    assert len(deps.fake_vcs.pushed) == 1 and len(deps.fake_vcs.opened) == 1
+
+
+def test_commit_subject_without_ticket():
+    assert commit_subject(None, make_candidate(category="docs", title="Describe x")) == "docs: describe x"
+
+
+def test_pr_body_without_ticket():
+    body = pr_body(fixed(), None, example_config().repo("acme/web"))
+    assert "## Ticket" not in body and "## Verification" in body

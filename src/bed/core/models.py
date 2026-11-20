@@ -33,8 +33,8 @@ class Verify(Model):
 class RepoConfig(Model):
     name: str
     vcs: str
-    tracker: str
-    tracker_project: str
+    tracker: str | None = None
+    tracker_project: str | None = None
     schedule: str
     timezone: str
     base_branch: str = "main"
