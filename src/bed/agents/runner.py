@@ -79,12 +79,14 @@ class StrandsAgentRunner:
         from strands import Agent
 
         limits = inp.repo.limits
-        if limits.usd_budget is not None and self.spending is None:
-            if self.prices is None:
-                raise ValueError("model prices required for dollar accounting")
+        if limits.daily_usd_budget is not None and self.prices is None:
+            raise ValueError("model prices required for dollar accounting")
+        self.model.update_config(max_tokens=limits.max_output_tokens)
+        if self.prices is not None and self.spending is None:
             pending = bool(inp.exploration and inp.exploration.candidates)
-            self.spending = SpendingClient(self.model.client, limits.usd_budget, self.prices,
-                                           max_calls=24 if inp.memory_enabled and pending else 60)
+            self.spending = SpendingClient(self.model.client, limits.daily_usd_budget, self.prices,
+                                           max_calls=24 if inp.memory_enabled and pending else 60,
+                                           budget_day=inp.budget_day)
             self.model.client = self.spending
             self.model.update_config(max_tokens=limits.max_output_tokens)
         guard = BudgetGuard(self.tokens_used, limits.token_budget,

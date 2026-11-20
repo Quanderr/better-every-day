@@ -17,7 +17,7 @@ RUN printf 'export PATH="$HOME/.local/share/mise/shims:$PATH"\n' > /etc/profile.
 COPY --from=ghcr.io/astral-sh/uv:0.9.5@sha256:f459f6f73a8c4ef5d69f4e6fbbdb8af751d6fa40ec34b39a1ab469acd6e289b7 /uv /usr/local/bin/uv
 
 WORKDIR /app
-COPY pyproject.toml uv.lock README.md* ./
+COPY pyproject.toml uv.lock README.md* LICENSE ./
 RUN uv export --frozen --no-dev --extra aws --extra worker --no-emit-project -o /tmp/requirements.txt \
     && uv pip install --system --no-cache --require-hashes -r /tmp/requirements.txt \
     && rm /tmp/requirements.txt

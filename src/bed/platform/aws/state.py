@@ -95,6 +95,26 @@ class DynamoStateStore:
                     raise
         raise RuntimeError("could not atomically reserve model budget")
 
+    def settle_budget(self, key: str, run_id: str, cost: float) -> None:
+        for _ in range(20):
+            old = self.get_meta(key)
+            reservations = json.loads(old or "{}")
+            if run_id not in reservations:
+                raise RuntimeError("missing model budget reservation")
+            if reservations[run_id] == cost:
+                return
+            reservations[run_id] = cost
+            try:
+                self.table.put_item(Item={"pk": META_PK, "sk": key, "data": json.dumps(reservations)},
+                                    ConditionExpression="#data = :old",
+                                    ExpressionAttributeNames={"#data": "data"},
+                                    ExpressionAttributeValues={":old": old})
+                return
+            except ClientError as exc:
+                if exc.response["Error"]["Code"] != "ConditionalCheckFailedException":
+                    raise
+        raise RuntimeError("could not atomically settle model budget")
+
     def try_lease(self, key: str, now: datetime, ttl: timedelta) -> bool:
         try:
             self.table.put_item(

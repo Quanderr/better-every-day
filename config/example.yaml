@@ -1,6 +1,7 @@
 model:
   provider: bedrock
-  id: us.anthropic.claude-opus-5-5
+  id: us.moonshotai.kimi-k3.1
+  prices: {input: 4.4, output: 22, cache_read: 0.22, cache_write: 5.5}
 connectors:
   vcs:
     main-github:
@@ -24,6 +25,7 @@ defaults:
     Prefer correctness bugs over style.
   categories: [bug, error-handling, test-gap, dead-code, perf, docs]
   limits:
+    daily_usd_budget: 15  # null disables the dollar cap
     max_prs_per_run: 2
     max_open_bot_prs: 5
     max_diff_lines: 150

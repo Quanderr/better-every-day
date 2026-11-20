@@ -1,5 +1,6 @@
 """Meter every Bedrock call, including SDK structured-output calls and retries."""
 import json
+from datetime import UTC, datetime
 from decimal import Decimal
 
 from bed.core.models import TokenPrices
@@ -10,9 +11,12 @@ class SpendLimitExceeded(RuntimeError):
 
 
 class SpendingClient:
-    def __init__(self, client, limit_usd: float, prices: TokenPrices, max_calls: int = 60):
+    def __init__(self, client, limit_usd: float | None, prices: TokenPrices, max_calls: int = 60,
+                 budget_day: str | None = None, clock=lambda: datetime.now(UTC)):
         self.raw = client
-        self.limit = Decimal(str(limit_usd))
+        self.limit = Decimal(str(limit_usd)) if limit_usd is not None else None
+        self.budget_day = budget_day
+        self.clock = clock
         self.prices = prices
         self.spent = Decimal(0)
         self.calls = 0
@@ -23,6 +27,9 @@ class SpendingClient:
         return getattr(self.raw, name)
 
     def _reserve(self, request):
+        if self.budget_day is not None and self.clock().astimezone(UTC).date().isoformat() != self.budget_day:
+            self.blocked = True
+            raise SpendLimitExceeded("UTC daily budget expired; wait for the next run")
         if self.calls >= self.max_calls:
             self.blocked = True
             raise SpendLimitExceeded("model call limit reached")
@@ -39,7 +46,7 @@ class SpendingClient:
         worst_input_rate = max(self.prices.input, self.prices.cache_write)
         reserve = (Decimal(maximum_input) * Decimal(str(worst_input_rate)) +
                    Decimal(maximum_output) * Decimal(str(self.prices.output))) / 1_000_000
-        if self.spent + reserve > self.limit:
+        if self.limit is not None and self.spent + reserve > self.limit:
             self.blocked = True
             raise SpendLimitExceeded("dollar limit: insufficient allowance for the next bounded model call")
         self.spent += reserve
@@ -55,7 +62,7 @@ class SpendingClient:
             ("cacheReadInputTokens", self.prices.cache_read), ("cacheWriteInputTokens", self.prices.cache_write),
         )) / 1_000_000
         self.spent += cost - reserve
-        if self.spent > self.limit:
+        if self.limit is not None and self.spent > self.limit:
             raise SpendLimitExceeded("reported usage exceeded the dollar allowance")
 
     def converse(self, **request):

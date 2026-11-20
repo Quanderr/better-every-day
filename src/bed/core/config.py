@@ -91,10 +91,8 @@ def _check(cfg: AppConfig) -> list[str]:
     seen: set[str] = set()
     for repo in cfg.repos:
         where = f"repos.{repo.name}"
-        if repo.limits.usd_budget is not None and cfg.model.prices is None:
-            errors.append(f"{where}: model.prices required with usd_budget")
-        if repo.limits.total_usd_budget is not None and repo.limits.usd_budget is None:
-            errors.append(f"{where}: usd_budget required with total_usd_budget")
+        if repo.limits.daily_usd_budget is not None and cfg.model.prices is None:
+            errors.append(f"{where}: model.prices required with daily_usd_budget")
         if repo.name in seen:
             errors.append(f"{where}: duplicate repo")
         seen.add(repo.name)

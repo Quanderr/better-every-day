@@ -198,22 +198,30 @@ budget failure. They contain repository-derived data, never trusted instructions
 authenticated result queue before the control plane stores them. Snapshots expire after 365 days.
 No automatic AgentCore memory extraction strategies are enabled, so saving memory makes no hidden model calls.
 
-To limit model spending, set `model.prices` (USD per million tokens: `input`, `output`, `cache_read`,
-`cache_write`) and these repository/default `limits`:
+Model spending uses one optional daily budget per repository, shared by exploration and fixing runs:
 
-- `usd_budget`: maximum allowance for one exploration run.
-- `cached_run_usd_budget`: smaller allowance for a cached-finding run (default `0.75`).
-- `total_usd_budget`: cumulative allowance across runs for the same repository and `budget_key`.
-- `budget_key`: an explicit campaign identifier; changing it opens a new allowance. Never rotate it automatically.
-- `max_output_tokens`: per-call output bound (default `2048`). The token and time limits still apply.
+```yaml
+defaults:
+  limits:
+    daily_usd_budget: 15  # default when omitted; null disables the dollar cap
+```
 
-The controller reserves each run's entire allowance before starting it and does not refund reservations
-based on worker-reported costs. This conservatively prevents missing results and retries from reopening
-the cumulative allowance. Exhausted campaigns return `skipped_budget` without starting a worker.
-The worker accounts separately for cached input and reserves a conservative text-input/output upper bound
-before every SDK model call, including structured-output calls. Unknown usage keeps the reservation.
-It may stop below the dollar limit when the next call cannot safely fit. Rates must match the selected
-model/profile; these limits cover model requests through the worker, not infrastructure or unrelated callers.
+The allowance resets at **00:00 UTC**, using a separate dated ledger automatically. There is no lifetime
+campaign cap or smaller cached-run allowance. Configure `model.prices` in USD per million tokens
+(`input`, `output`, `cache_read`, `cache_write`) when the daily budget is enabled.
+
+Before starting, the controller atomically reserves the remaining daily allowance. A completed or failed
+run settles that reservation to its metered usage, releasing unused dollars for subsequent runs. Missing
+results retain their reservation for that UTC day. Late results settle their original day. A worker cannot
+start another model call after its budget day expires. Exhausted days return `skipped_budget`.
+
+The worker reserves a conservative text-input/output bound before every SDK model call, including
+structured-output calls. Missing usage metadata retains that call's reservation; a run may stop below
+the cap when the next call cannot safely fit. `max_output_tokens` defaults to `2048`; token, time, call,
+and PR limits still apply even with `daily_usd_budget: null`. Prices must match the selected model.
+These are application limits on worker model calls, not an AWS billing cap; infrastructure and unrelated
+callers are separate. Legacy `usd_budget`, `cached_run_usd_budget`, `total_usd_budget`, and `budget_key`
+settings must be replaced by `daily_usd_budget`; historical campaign ledgers are retained but unused.
 
 `schedules_enabled=false` keeps schedules paused. The installed GitHub workflow reads this from
 `BED_SCHEDULES_ENABLED` and defaults to `false`; set it to `true` deliberately after verification.

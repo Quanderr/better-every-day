@@ -170,6 +170,13 @@ class FakeSecrets:
 
 
 class InMemoryStore:
+    def settle_budget(self, key, run_id, cost):
+        reservations = json.loads(self.get_meta(key) or "{}")
+        if run_id not in reservations:
+            raise RuntimeError("missing model budget reservation")
+        reservations[run_id] = cost
+        self.put_meta(key, json.dumps(reservations))
+
     def reserve_budget(self, key, run_id, requested, maximum):
         reservations = json.loads(self.get_meta(key) or "{}")
         if run_id in reservations:

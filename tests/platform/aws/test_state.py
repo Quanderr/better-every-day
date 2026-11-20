@@ -88,3 +88,28 @@ def test_budget_compare_and_swap_handles_an_overlapping_start(store, monkeypatch
     monkeypatch.setattr(store.table, "put_item", racing_put)
     assert store.reserve_budget("budget", "ours", 3, 3.7) == 0.7
     assert other.reserve_budget("budget", "later", 3, 3.7) == 0
+
+
+def test_settlement_releases_only_unused_allowance_idempotently(store):
+    assert store.reserve_budget("daily", "first", 15, 15) == 15
+    store.settle_budget("daily", "first", 1.5)
+    store.settle_budget("daily", "first", 1.5)
+    assert store.reserve_budget("daily", "next", 15, 15) == 13.5
+
+
+def test_settlement_retries_without_overwriting_concurrent_reservations(store, monkeypatch):
+    assert store.reserve_budget("daily", "first", 5, 15) == 5
+    other = DynamoStateStore("bed")
+    original = store.table.put_item
+    raced = False
+
+    def put(**kwargs):
+        nonlocal raced
+        if not raced:
+            raced = True
+            assert other.reserve_budget("daily", "other", 5, 15) == 5
+        return original(**kwargs)
+
+    monkeypatch.setattr(store.table, "put_item", put)
+    store.settle_budget("daily", "first", 1)
+    assert other.reserve_budget("daily", "last", 15, 15) == 9

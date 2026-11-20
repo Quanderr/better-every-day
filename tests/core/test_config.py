@@ -122,3 +122,23 @@ def test_protected_paths_merge_defaults_and_repo():
     cfg = load_config(_mutate(mutate)(EXAMPLE))
     assert cfg.repo("acme/web").protected_paths == ["ops/**", "scripts/**"]
     assert cfg.repo("acme/api").protected_paths == ["ops/**"]
+
+
+def test_daily_budget_defaults_to_fifteen_and_null_disables_it():
+    text = _mutate(lambda d: d["defaults"]["limits"].pop("daily_usd_budget"))(EXAMPLE)
+    assert load_config(text).repos[0].limits.daily_usd_budget == 15
+    assert load_config(with_repo_limits(daily_usd_budget=None)).repos[0].limits.daily_usd_budget is None
+
+
+@pytest.mark.parametrize("value", [0, -1, float("inf"), float("nan")])
+def test_invalid_daily_budget(value):
+    with pytest.raises(ConfigError):
+        load_config(with_repo_limits(daily_usd_budget=value))
+
+
+def test_daily_budget_requires_prices_but_unlimited_does_not():
+    text = _mutate(lambda d: d["model"].pop("prices"))(EXAMPLE)
+    with pytest.raises(ConfigError, match="model.prices required"):
+        load_config(text)
+    text = _mutate(lambda d: d["defaults"]["limits"].update(daily_usd_budget=None))(text)
+    load_config(text)

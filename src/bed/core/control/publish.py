@@ -280,8 +280,11 @@ def _record(result: FixResult, repo: RepoConfig, run_id: str, status: FindingSta
 
 
 def _finish(run: RunRecord, result: WorkerResult, deps: ControlDeps) -> RunRecord:
+    cost = max(run.cost_usd, result.cost_usd)
+    if run.budget_day is not None:
+        deps.store.settle_budget(f"budget#daily#{run.repo}#{run.budget_day}", run.run_id, cost)
     finished = run.model_copy(update={"status": result.status, "error": result.error,
-                                      "tokens_used": result.tokens_used, "cost_usd": result.cost_usd,
+                                      "tokens_used": result.tokens_used, "cost_usd": cost,
                                       "finished_at": deps.clock()})
     deps.store.put_run(finished)
     return finished

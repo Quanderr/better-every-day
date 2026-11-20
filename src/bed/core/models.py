@@ -20,10 +20,7 @@ class Limits(Model):
     max_files: int = Field(5, ge=1)
     token_budget: int = Field(2_000_000, ge=1)
     timeout_minutes: int = Field(60, ge=1)
-    usd_budget: float | None = Field(None, gt=0)
-    cached_run_usd_budget: float = Field(0.75, gt=0)
-    total_usd_budget: float | None = Field(None, gt=0)
-    budget_key: str = Field("default", min_length=1, max_length=80)
+    daily_usd_budget: float | None = Field(15.0, gt=0, allow_inf_nan=False)
     max_output_tokens: int = Field(2048, ge=16, le=8192)
 
 
@@ -132,6 +129,7 @@ class ExplorationMemory(Model):
 
 
 class WorkerInput(Model):
+    budget_day: str | None = None
     run_id: str
     repo: RepoConfig
     clone_url: str
@@ -210,4 +208,5 @@ class RunRecord(Model):
     nonce: str = ""
     read_token_id: str | None = None
     cost_usd: float = Field(0, ge=0)
+    budget_day: str | None = None
     budget_reserved_usd: float = Field(0, ge=0)

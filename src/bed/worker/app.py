@@ -46,6 +46,7 @@ def handle_invocation(
         return {"status": "rejected", "error": repr(e)}
 
     def job() -> None:
+        agents = None
         try:
             agents = runner_factory(inp.model)
             result = run_worker(inp, Workspace(workdir_base / inp.run_id), agents, time.monotonic,
@@ -53,7 +54,8 @@ def handle_invocation(
         except Exception as e:
             log.exception("worker job crashed")
             result = WorkerResult(run_id=inp.run_id, repo=inp.repo.name, status="failed", error=repr(e),
-                                  nonce=inp.nonce)
+                                  nonce=inp.nonce, cost_usd=getattr(agents, "cost_usd", 0),
+                                  tokens_used=getattr(agents, "tokens_used", 0))
         try:
             _emit(sink, result)
         except Exception:

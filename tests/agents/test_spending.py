@@ -54,3 +54,23 @@ def test_requires_explicit_output_bound():
     client = SpendingClient(None, 1, PRICES)
     with pytest.raises(SpendLimitExceeded, match="output token limit"):
         client.converse(messages=[])
+
+
+def test_unlimited_still_meters_without_dollar_cap():
+    raw = SimpleNamespace(converse=lambda **kw: {"usage": {"outputTokens": 1000000}})
+    client = SpendingClient(raw, None, PRICES)
+    client.converse(**REQUEST)
+    assert client.spent == 22 and not client.blocked
+
+
+def test_midnight_blocks_old_allowance_before_model_call():
+    from datetime import UTC, datetime
+    calls = []
+    now = [datetime(2026, 11, 20, 23, 59, tzinfo=UTC)]
+    raw = SimpleNamespace(converse=lambda **kw: calls.append(kw) or {"usage": {"outputTokens": 1}})
+    client = SpendingClient(raw, 15, PRICES, budget_day="2026-11-20", clock=lambda: now[0])
+    client.converse(**REQUEST)
+    now[0] = datetime(2026, 11, 21, tzinfo=UTC)
+    with pytest.raises(SpendLimitExceeded, match="UTC daily budget expired"):
+        client.converse(**REQUEST)
+    assert len(calls) == 1 and client.blocked
