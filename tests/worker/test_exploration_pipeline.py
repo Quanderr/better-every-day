@@ -45,12 +45,11 @@ def input_for(memory=None, **kw):
 
 def test_first_run_explores_and_next_run_fixes_without_scouting():
     candidate = make_candidate()
-    scout = FakeAgentRunner([candidate])
-    scout.last_summary = "Small Python service; src/a.py handles users."
+    scout = FakeAgentRunner([candidate], summary="Small Python service; src/a.py handles users.")
     snapshots = []
     first = run_worker(input_for(), Workspace(), scout, lambda: 0, snapshots.append)
     assert first.status == "ok" and first.exploration.complete and scout.fix_calls == []
-    assert first.exploration.summary == scout.last_summary and snapshots
+    assert first.exploration.summary == scout.summary and snapshots
 
     def edit(ws):
         ws.write("src/a.py", "guarded = True\n")
@@ -76,9 +75,9 @@ def test_partial_discovery_survives_budget_exhaustion():
     candidate = make_candidate()
 
     class Scout(FakeAgentRunner):
-        def scout(self, ws, inp):
-            self.discovery(None, "Map saved before the model stops")
-            self.discovery(candidate, "")
+        def scout(self, ws, inp, discoveries=None):
+            discoveries.remember_context("Map saved before the model stops")
+            discoveries.remember_finding(candidate)
             raise BudgetExceeded("limit")
 
     snapshots = []

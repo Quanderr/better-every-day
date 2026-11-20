@@ -2,9 +2,9 @@ from datetime import timedelta
 
 from helpers import example_config, make_candidate
 
-from bed.core.control.publish import handle_result
+from bed.core.control.results import handle_result
 from bed.core.control.start_run import start_run
-from bed.core.models import ExplorationMemory, WorkerResult
+from bed.core.models import Checkpoint, ExplorationMemory, WorkerResult
 from bed.testing.fakes import fake_deps
 
 
@@ -33,13 +33,25 @@ def test_checkpoint_is_authenticated_and_does_not_finish_or_revoke():
     deps = deps_with_budget()
     run = start_run("acme/web", deps)
     memory = ExplorationMemory(generation=run.run_id, base_sha="a" * 40, candidates=[make_candidate()])
-    checkpoint = WorkerResult(run_id=run.run_id, repo=run.repo, base_sha="a" * 40, status="started",
-                              kind="checkpoint", exploration=memory, nonce="wrong")
+    checkpoint = Checkpoint(run_id=run.run_id, repo=run.repo, base_sha="a" * 40, exploration=memory,
+                            nonce="wrong")
     handle_result(checkpoint, deps)
     assert deps.memory.value is None
     handle_result(checkpoint.model_copy(update={"nonce": run.nonce}), deps)
     assert deps.memory.value == memory
     assert deps.store.get_run(run.repo, run.run_id).status == "started" and deps.fake_vcs.revoked == []
+
+
+def test_untrusted_snapshot_is_discarded_and_the_run_still_finishes():
+    deps = deps_with_budget()
+    run = start_run("acme/web", deps)
+    deps.fake_vcs.foreign_shas.add("b" * 40)
+    memory = ExplorationMemory(generation=run.run_id, base_sha="b" * 40, candidates=[make_candidate()])
+    finished = handle_result(WorkerResult(run_id=run.run_id, repo=run.repo, base_sha="b" * 40, status="ok",
+                                          nonce=run.nonce, exploration=memory), deps)
+    assert deps.memory.value is None
+    assert finished.status == "failed" and finished.error == "untrusted base_sha"
+    assert deps.fake_vcs.revoked
 
 
 def finish_run(deps, run, cost, status="ok"):

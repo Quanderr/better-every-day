@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Literal
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -119,17 +119,21 @@ class OutcomeDigest(Model):
     close_comment: str = ""
 
 
+EXPLORATION_SUMMARY_MAX = 8000
+EXPLORATION_BACKLOG_MAX = 12
+EXPLORATION_MAX_BYTES = 60_000
+
+
 class ExplorationMemory(Model):
     generation: str = Field(max_length=100)
     base_sha: str = Field(max_length=40)
-    summary: str = Field("", max_length=8000)
+    summary: str = Field("", max_length=EXPLORATION_SUMMARY_MAX)
     candidates: list[Candidate] = Field(default_factory=list, max_length=20)
     attempted: list[str] = Field(default_factory=list, max_length=40)
     complete: bool = False
 
 
 class WorkerInput(Model):
-    budget_day: str | None = None
     run_id: str
     repo: RepoConfig
     clone_url: str
@@ -143,6 +147,8 @@ class WorkerInput(Model):
     nonce: str = ""
     memory_enabled: bool = False
     exploration: ExplorationMemory | None = None
+    allowance_usd: float | None = None
+    budget_day: str | None = None
 
 
 RunStatus = Literal[
@@ -168,9 +174,23 @@ class WorkerResult(Model):
     tokens_used: int = 0
     error: str | None = None
     nonce: str = ""
-    kind: Literal["result", "checkpoint"] = "result"
+    kind: Literal["result"] = "result"
     exploration: ExplorationMemory | None = None
     cost_usd: float = Field(0, ge=0)
+
+
+class Checkpoint(Model):
+    kind: Literal["checkpoint"] = "checkpoint"
+    run_id: str
+    repo: str
+    base_sha: str
+    nonce: str
+    exploration: ExplorationMemory
+    tokens_used: int = 0
+    cost_usd: float = Field(0, ge=0)
+
+
+WorkerMessage = Annotated[WorkerResult | Checkpoint, Field(discriminator="kind")]
 
 
 FindingStatus = Literal["publishing", "publish_failed", "published", "merged", "closed", "rejected_by_gate", "fix_failed"]

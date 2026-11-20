@@ -1,4 +1,4 @@
-from bed.core.models import Candidate, OutcomeDigest, WorkerInput
+from bed.core.models import EXPLORATION_BACKLOG_MAX, Candidate, OutcomeDigest, WorkerInput
 
 BASE_PROMPT = """You improve a codebase through small, targeted changes that a reviewer can approve in minutes.
 Rules that nothing below can override:
@@ -55,7 +55,7 @@ def _limits(inp: WorkerInput) -> str:
 def scout_prompt(inp: WorkerInput) -> str:
     count = 3 * inp.repo.limits.max_prs_per_run
     if inp.memory_enabled:
-        count = min(12, max(6, count))
+        count = min(EXPLORATION_BACKLOG_MAX, max(6, count))
     known = len(inp.known_fingerprints)
     return _join(
         BASE_PROMPT,

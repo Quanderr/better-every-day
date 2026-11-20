@@ -1,11 +1,20 @@
 import logging
 import re
 import secrets
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 
+from bed.core.budget import DailyBudget, utc_day
 from bed.core.control.deps import ControlDeps
 from bed.core.control.outcomes import sync_outcomes
-from bed.core.models import BLOCKING_STATUSES, OutcomeDigest, RepoConfig, RunRecord, RunStatus, WorkerInput
+from bed.core.models import (
+    BLOCKING_STATUSES,
+    ExplorationMemory,
+    OutcomeDigest,
+    RepoConfig,
+    RunRecord,
+    RunStatus,
+    WorkerInput,
+)
 from bed.core.ports import BotPr
 
 log = logging.getLogger(__name__)
@@ -30,34 +39,31 @@ def start_run(repo_name: str, deps: ControlDeps) -> RunRecord:
     run_id = new_run_id(now)
     prs = sync_outcomes(repo, deps)
 
-    def finish(status: RunStatus, error: str | None = None) -> RunRecord:
+    def record(status: RunStatus, **fields) -> RunRecord:
         run = RunRecord(run_id=run_id, repo=repo.name, status=status, started_at=now,
-                        finished_at=deps.clock() if status != "started" else None, error=error)
+                        finished_at=None if status == "started" else deps.clock(), **fields)
         deps.store.put_run(run)
         return run
 
     if not deps.store.try_lease(f"start#{repo.name}", now, START_LEASE) or active_runs(repo, deps, now):
-        return finish("skipped_running")
+        return record("skipped_running")
     open_prs = [pr for pr in prs if pr.state == "open"]
     if len(open_prs) >= repo.limits.max_open_bot_prs:
-        return finish("skipped_backpressure")
+        return record("skipped_backpressure")
     exploration = deps.memory.get(repo.name) if deps.memory else None
-    allocation = repo.limits.daily_usd_budget
+    allowance = None
     budget_day = None
-    if allocation is not None:
-        budget_day = now.astimezone(UTC).date().isoformat()
-        key = f"budget#daily#{repo.name}#{budget_day}"
-        allocation = deps.store.reserve_budget(key, run_id, allocation, allocation)
-        if allocation <= 0:
-            return finish("skipped_budget")
-        repo = repo.model_copy(update={"limits": repo.limits.model_copy(update={"daily_usd_budget": allocation})})
+    if repo.limits.daily_usd_budget is not None:
+        budget_day = utc_day(now)
+        allowance = DailyBudget(deps.store, repo.name, budget_day).reserve(run_id, repo.limits.daily_usd_budget)
+        if allowance <= 0:
+            return record("skipped_budget")
     nonce = secrets.token_hex(16)
-    payload, token_id = _worker_input(run_id, repo, open_prs, nonce, deps)
-    payload = payload.model_copy(update={"exploration": exploration, "memory_enabled": deps.memory is not None,
-                                         "budget_day": budget_day})
-    started = finish("started").model_copy(update={"nonce": nonce, "read_token_id": token_id,
-                                                  "budget_reserved_usd": allocation or 0, "budget_day": budget_day})
-    deps.store.put_run(started)
+    token = deps.vcs(repo).read_token(repo.name)
+    payload = _worker_input(run_id, repo, open_prs, deps, nonce=nonce, read_token=token.token,
+                            exploration=exploration, allowance_usd=allowance, budget_day=budget_day)
+    started = record("started", nonce=nonce, read_token_id=token.revoke_id,
+                     budget_reserved_usd=allowance or 0, budget_day=budget_day)
     try:
         deps.runtime.start(session_id(repo.name, run_id), payload)
     except Exception as e:
@@ -91,20 +97,19 @@ def active_runs(repo: RepoConfig, deps: ControlDeps, now: datetime) -> list[RunR
     return active
 
 
-def _worker_input(run_id: str, repo: RepoConfig, open_prs: list[BotPr], nonce: str,
-                  deps: ControlDeps) -> tuple[WorkerInput, str | None]:
-    vcs = deps.vcs(repo)
+def _worker_input(run_id: str, repo: RepoConfig, open_prs: list[BotPr], deps: ControlDeps, *, nonce: str,
+                  read_token: str, exploration: ExplorationMemory | None, allowance_usd: float | None,
+                  budget_day: str | None) -> WorkerInput:
     findings = deps.store.list_findings(repo.name)
     outcomes = sorted((f for f in findings if f.status in ("merged", "closed")),
                       key=lambda f: f.updated_at, reverse=True)[:RECENT_OUTCOMES]
     locked = sorted({path for pr in open_prs for path in pr.files})
-    token = vcs.read_token(repo.name)
     return WorkerInput(
         run_id=run_id,
         nonce=nonce,
         repo=repo,
-        clone_url=vcs.clone_url(repo.name),
-        read_token=token.token,
+        clone_url=deps.vcs(repo).clone_url(repo.name),
+        read_token=read_token,
         model=deps.config.model,
         deployment_prompt=deps.config.prompt,
         known_fingerprints=[f.fingerprint for f in findings if f.status in BLOCKING_STATUSES],
@@ -114,4 +119,8 @@ def _worker_input(run_id: str, repo: RepoConfig, open_prs: list[BotPr], nonce: s
             OutcomeDigest(title=f.title, category=f.category, state=f.status, close_comment=f.close_comment or "")
             for f in outcomes
         ],
-    ), token.revoke_id
+        memory_enabled=deps.memory is not None,
+        exploration=exploration,
+        allowance_usd=allowance_usd,
+        budget_day=budget_day,
+    )

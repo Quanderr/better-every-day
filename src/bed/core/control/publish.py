@@ -1,12 +1,9 @@
 import hashlib
-import hmac
 import json
 import logging
 import re
-from datetime import timedelta
 
 from bed.core.control.deps import ControlDeps
-from bed.core.control.start_run import revoke_read_token
 from bed.core.fingerprint import fingerprint
 from bed.core.gates import GateDecision, evaluate, is_safe_path
 from bed.core.models import (
@@ -25,7 +22,6 @@ from bed.core.ports import TicketRef
 
 log = logging.getLogger(__name__)
 SHA = re.compile(r"[0-9a-f]{40}")
-LATE_RESULT_WINDOW = timedelta(hours=24)
 LESSONS_MAX_CHARS = 2000
 LESSONS_MAX_LINES = 10
 ZW = "\u200b"
@@ -49,10 +45,6 @@ COMMIT_TYPE: dict[Category, str] = {
 def branch_name(prefix: str, title: str) -> str:
     slug = re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")[:BRANCH_TITLE_MAX].rstrip("-")
     return f"{prefix}-{slug}"
-
-
-def ticketless_branch_prefix(fingerprint: str) -> str:
-    return f"bed-{fingerprint[:8]}"
 
 
 def _scrub(text: str) -> str:
@@ -110,52 +102,18 @@ def pr_body(result: FixResult, ticket: TicketRef | None, repo: RepoConfig) -> st
     )
 
 
-def handle_result(result: WorkerResult, deps: ControlDeps) -> RunRecord:
-    run = deps.store.get_run(result.repo, result.run_id)
-    if run is None:
-        return RunRecord(run_id=result.run_id, repo=result.repo, status="failed", started_at=deps.clock(),
-                         error="unknown run")
-    if not hmac.compare_digest(run.nonce, result.nonce):
-        log.warning("ignoring result for %s with a wrong nonce", run.run_id)
-        return run
-    if run.status not in ("started", "timeout"):
-        return run
-    if run.status == "timeout" and deps.clock() - run.started_at > LATE_RESULT_WINDOW:
-        return run
-    repo = deps.config.repo(result.repo)
-    if result.exploration is not None and deps.memory is not None:
-        memory = result.exploration
-        if memory.base_sha != result.base_sha or not SHA.fullmatch(memory.base_sha):
-            raise ValueError("invalid exploration base commit")
-        if not deps.vcs(repo).is_ancestor(repo.name, memory.base_sha, repo.base_branch):
-            raise ValueError("untrusted exploration base commit")
-        if len(memory.model_dump_json().encode()) > 60_000:
-            raise ValueError("exploration checkpoint too large")
-        if any(not is_safe_path(p) for c in memory.candidates for p in c.files):
-            raise ValueError("unsafe cached candidate path")
-        deps.memory.put(repo.name, memory, run.run_id)
-    if result.kind == "checkpoint":
-        # A progress event must not finish the run or revoke its live clone token.
-        progress = run.model_copy(update={"cost_usd": max(run.cost_usd, result.cost_usd),
-                                          "tokens_used": max(run.tokens_used, result.tokens_used)})
-        deps.store.put_run(progress)
-        return progress
-    try:
-        return _handle(run, result, repo, deps)
-    finally:
-        revoke_read_token(run, repo, deps)
+def is_trusted_base(sha: str, repo: RepoConfig, deps: ControlDeps) -> bool:
+    return bool(SHA.fullmatch(sha)) and deps.vcs(repo).is_ancestor(repo.name, sha, repo.base_branch)
 
 
-def _handle(run: RunRecord, result: WorkerResult, repo: RepoConfig, deps: ControlDeps) -> RunRecord:
+def publish_results(run: RunRecord, result: WorkerResult, repo: RepoConfig, deps: ControlDeps) -> WorkerResult:
     if result.status != "ok":
-        return _finish(run, result, deps)
-    vcs = deps.vcs(repo)
-    if not SHA.fullmatch(result.base_sha) or not vcs.is_ancestor(repo.name, result.base_sha, repo.base_branch):
-        rejected = result.model_copy(update={"status": "failed", "error": "untrusted base_sha"})
-        return _finish(run, rejected, deps)
+        return result
+    if not is_trusted_base(result.base_sha, repo, deps):
+        return result.model_copy(update={"status": "failed", "error": "untrusted base_sha"})
     ledger = {f.fingerprint: f for f in deps.store.list_findings(repo.name)}
     known = {fp for fp, f in ledger.items() if f.run_id != run.run_id and f.status in BLOCKING_STATUSES}
-    locked = {p for pr in vcs.list_bot_prs(repo.name) if pr.state == "open" for p in pr.files}
+    locked = {p for pr in deps.vcs(repo).list_bot_prs(repo.name) if pr.state == "open" for p in pr.files}
     published = 0
     seen: set[str] = set()
     for worker_fix in result.results:
@@ -173,7 +131,7 @@ def _handle(run: RunRecord, result: WorkerResult, repo: RepoConfig, deps: Contro
             _mark_publish_failed(fix, repo, run.run_id, repr(e), deps)
     if result.lessons is not None:
         deps.store.put_lessons(repo.name, cap_lessons(result.lessons))
-    return _finish(run, result, deps)
+    return result
 
 
 def cap_lessons(text: str) -> str:
@@ -241,14 +199,14 @@ def publish_one(result: FixResult, base_sha: str, repo: RepoConfig, run_id: str,
         deps.store.put_finding(updated)
         return updated
 
-    if tracker and repo.tracker_project and not finding.ticket_id:
+    if tracker and not finding.ticket_id:
         ticket = tracker.find_ticket(repo.tracker_project, result.fingerprint) or tracker.create_ticket(
             repo.tracker_project, c.title, ticket_body(result), result.fingerprint
         )
         finding = save(ticket_id=ticket.id, ticket_url=ticket.url)
     ticket_id = finding.ticket_id
     ticket = TicketRef(id=ticket_id, url=finding.ticket_url or "") if ticket_id else None
-    branch = finding.branch or branch_name(ticket_id or ticketless_branch_prefix(result.fingerprint), c.title)
+    branch = finding.branch or branch_name(ticket_id or f"bed-{result.fingerprint[:8]}", c.title)
     if vcs.find_branch(repo.name, branch) is None:
         vcs.push_branch(repo.name, branch, base_sha, commit_message(ticket_id, c, result.summary), result.changes)
     if finding.branch != branch:
@@ -285,14 +243,3 @@ def _record(result: FixResult, repo: RepoConfig, run_id: str, status: FindingSta
     if existing and existing.status in BLOCKING_STATUSES:
         return
     deps.store.put_finding(_new_finding(result, repo, run_id, status, reason, deps))
-
-
-def _finish(run: RunRecord, result: WorkerResult, deps: ControlDeps) -> RunRecord:
-    cost = max(run.cost_usd, result.cost_usd)
-    if run.budget_day is not None:
-        deps.store.settle_budget(f"budget#daily#{run.repo}#{run.budget_day}", run.run_id, cost)
-    finished = run.model_copy(update={"status": result.status, "error": result.error,
-                                      "tokens_used": result.tokens_used, "cost_usd": cost,
-                                      "finished_at": deps.clock()})
-    deps.store.put_run(finished)
-    return finished

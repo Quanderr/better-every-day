@@ -8,7 +8,7 @@ import boto3
 
 from bed.core.config import load_config
 from bed.core.control.deps import ControlDeps
-from bed.core.control.publish import handle_result
+from bed.core.control.results import handle_result
 from bed.core.control.start_run import start_run
 from bed.core.control.summary import send_summary
 from bed.platform.aws.eventbus import parse_result

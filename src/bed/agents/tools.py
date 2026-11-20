@@ -1,6 +1,6 @@
 from strands import tool
 
-from bed.core.models import Verify
+from bed.core.models import Candidate, Verify
 from bed.worker.workspace import Workspace, WorkspaceError
 
 READ_TIMEOUT_S = 60
@@ -104,3 +104,17 @@ def build_tools(ws: Workspace, verify: Verify, writable: bool) -> list:
 
     writers = [write_file, replace_in_file, delete_file]
     return [*readonly, *writers, run_verify] if verify.mode == "sandbox" else [*readonly, *writers]
+
+
+def discovery_tools(discoveries) -> list:
+    @tool(name="remember_finding",
+          description="Checkpoint one concrete finding immediately, before continuing exploration.")
+    def remember_finding(candidate: Candidate) -> str:
+        return discoveries.remember_finding(Candidate.model_validate(candidate))
+
+    @tool(name="remember_context",
+          description="Save a compact repository map and exploration progress. No secrets or raw transcripts.")
+    def remember_context(summary: str) -> str:
+        return discoveries.remember_context(summary)
+
+    return [remember_finding, remember_context]

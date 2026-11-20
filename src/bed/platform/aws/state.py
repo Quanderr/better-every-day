@@ -1,6 +1,5 @@
-import json
+from collections.abc import Callable
 from datetime import datetime, timedelta
-from decimal import ROUND_DOWN, Decimal
 from typing import Any
 
 import boto3
@@ -11,6 +10,7 @@ from bed.core.models import Finding, RunRecord
 
 META_PK = "META"
 LEASE_PK = "LEASE"
+CAS_ATTEMPTS = 20
 
 
 def _repo_pk(repo: str) -> str:
@@ -73,47 +73,22 @@ class DynamoStateStore:
     def put_meta(self, key: str, value: str) -> None:
         self._put(META_PK, key, value)
 
-    def reserve_budget(self, key: str, run_id: str, requested: float, maximum: float) -> float:
-        for _ in range(20):
+    def update_meta(self, key: str, change: Callable[[str | None], str | None]) -> str | None:
+        for _ in range(CAS_ATTEMPTS):
             old = self.get_meta(key)
-            reservations = json.loads(old or "{}")
-            if run_id in reservations:
-                return float(reservations[run_id])
-            remaining = Decimal(str(maximum)) - sum(Decimal(str(v)) for v in reservations.values())
-            amount = min(Decimal(str(requested)), remaining).quantize(Decimal("0.00000001"), rounding=ROUND_DOWN)
-            if amount <= 0:
-                return 0
-            reservations[run_id] = float(amount)
-            options = {"ConditionExpression": "#data = :old", "ExpressionAttributeValues": {":old": old}} if old else {
+            new = change(old)
+            if new is None or new == old:
+                return old
+            condition = {"ConditionExpression": "#data = :old", "ExpressionAttributeValues": {":old": old}} if old else {
                 "ConditionExpression": "attribute_not_exists(#data)"}
             try:
-                self.table.put_item(Item={"pk": META_PK, "sk": key, "data": json.dumps(reservations)},
-                                    ExpressionAttributeNames={"#data": "data"}, **options)
-                return float(amount)
+                self.table.put_item(Item={"pk": META_PK, "sk": key, "data": new},
+                                    ExpressionAttributeNames={"#data": "data"}, **condition)
+                return new
             except ClientError as exc:
                 if exc.response["Error"]["Code"] != "ConditionalCheckFailedException":
                     raise
-        raise RuntimeError("could not atomically reserve model budget")
-
-    def settle_budget(self, key: str, run_id: str, cost: float) -> None:
-        for _ in range(20):
-            old = self.get_meta(key)
-            reservations = json.loads(old or "{}")
-            if run_id not in reservations:
-                raise RuntimeError("missing model budget reservation")
-            if reservations[run_id] == cost:
-                return
-            reservations[run_id] = cost
-            try:
-                self.table.put_item(Item={"pk": META_PK, "sk": key, "data": json.dumps(reservations)},
-                                    ConditionExpression="#data = :old",
-                                    ExpressionAttributeNames={"#data": "data"},
-                                    ExpressionAttributeValues={":old": old})
-                return
-            except ClientError as exc:
-                if exc.response["Error"]["Code"] != "ConditionalCheckFailedException":
-                    raise
-        raise RuntimeError("could not atomically settle model budget")
+        raise RuntimeError(f"could not atomically update {key}")
 
     def try_lease(self, key: str, now: datetime, ttl: timedelta) -> bool:
         try:

@@ -12,7 +12,7 @@ from bedrock_agentcore.runtime import BedrockAgentCoreApp
 from pydantic import ValidationError
 
 from bed.agents.runner import AgentRunner
-from bed.core.models import FixResult, ModelConfig, WorkerInput, WorkerResult
+from bed.core.models import FixResult, WorkerInput, WorkerResult
 from bed.core.ports import ResultSink
 from bed.worker.pipeline import run_worker
 from bed.worker.workspace import Workspace
@@ -27,7 +27,7 @@ def handle_invocation(
     sink: ResultSink,
     start_task: Callable[[str], Any],
     complete_task: Callable[[Any], None],
-    runner_factory: Callable[[ModelConfig], AgentRunner],
+    runner_factory: Callable[[WorkerInput], AgentRunner],
     spawn: Callable[[Callable[[], None]], None],
     workdir_base: Path = Path("/tmp"),
 ) -> dict:
@@ -48,14 +48,13 @@ def handle_invocation(
     def job() -> None:
         agents = None
         try:
-            agents = runner_factory(inp.model)
-            result = run_worker(inp, Workspace(workdir_base / inp.run_id), agents, time.monotonic,
-                                checkpoint=sink.emit)
+            agents = runner_factory(inp)
+            result = run_worker(inp, Workspace(workdir_base / inp.run_id), agents, time.monotonic, sink.emit)
         except Exception as e:
             log.exception("worker job crashed")
             result = WorkerResult(run_id=inp.run_id, repo=inp.repo.name, status="failed", error=repr(e),
-                                  nonce=inp.nonce, cost_usd=getattr(agents, "cost_usd", 0),
-                                  tokens_used=getattr(agents, "tokens_used", 0))
+                                  nonce=inp.nonce, cost_usd=agents.cost_usd if agents else 0,
+                                  tokens_used=agents.tokens_used if agents else 0)
         try:
             _emit(sink, result)
         except Exception:
@@ -114,10 +113,10 @@ def _sink() -> ResultSink:
     return SqsSink(os.environ["BED_RESULT_QUEUE_URL"])
 
 
-def _runner(model: ModelConfig) -> AgentRunner:
+def _runner(inp: WorkerInput) -> AgentRunner:
     from bed.agents.runner import StrandsAgentRunner
 
-    return StrandsAgentRunner(model)
+    return StrandsAgentRunner(inp)
 
 
 def _spawn(job: Callable[[], None]) -> None:

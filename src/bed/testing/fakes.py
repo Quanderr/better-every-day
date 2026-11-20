@@ -1,4 +1,3 @@
-import json
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
@@ -6,7 +5,15 @@ from types import SimpleNamespace
 from typing import Any
 
 from bed.core.control.deps import ControlDeps
-from bed.core.models import AppConfig, FileChange, Finding, RunRecord, WorkerInput, WorkerResult
+from bed.core.models import (
+    AppConfig,
+    Checkpoint,
+    FileChange,
+    Finding,
+    RunRecord,
+    WorkerInput,
+    WorkerResult,
+)
 from bed.core.ports import BotPr, PrRef, ReadToken, Summary, TicketRef
 
 
@@ -154,11 +161,11 @@ class FakeRuntime(Failing):
 class FakeSink(Failing):
     def __init__(self) -> None:
         super().__init__()
-        self.emitted: list[WorkerResult] = []
+        self.emitted: list[WorkerResult | Checkpoint] = []
 
-    def emit(self, result: WorkerResult) -> None:
+    def emit(self, message: WorkerResult | Checkpoint) -> None:
         self._maybe_fail("emit")
-        self.emitted.append(result)
+        self.emitted.append(message)
 
 
 class FakeSecrets:
@@ -170,24 +177,6 @@ class FakeSecrets:
 
 
 class InMemoryStore:
-    def settle_budget(self, key, run_id, cost):
-        reservations = json.loads(self.get_meta(key) or "{}")
-        if run_id not in reservations:
-            raise RuntimeError("missing model budget reservation")
-        reservations[run_id] = cost
-        self.put_meta(key, json.dumps(reservations))
-
-    def reserve_budget(self, key, run_id, requested, maximum):
-        reservations = json.loads(self.get_meta(key) or "{}")
-        if run_id in reservations:
-            return reservations[run_id]
-        amount = min(requested, round(maximum - sum(reservations.values()), 8))
-        if amount <= 0:
-            return 0
-        reservations[run_id] = amount
-        self.put_meta(key, json.dumps(reservations))
-        return amount
-
     def __init__(self) -> None:
         self.runs: dict[tuple[str, str], RunRecord] = {}
         self.findings: dict[tuple[str, str], Finding] = {}
@@ -225,6 +214,12 @@ class InMemoryStore:
 
     def put_meta(self, key: str, value: str) -> None:
         self.meta[key] = value
+
+    def update_meta(self, key: str, change: Callable[[str | None], str | None]) -> str | None:
+        new = change(self.meta.get(key))
+        if new is not None:
+            self.meta[key] = new
+        return self.meta.get(key)
 
     def try_lease(self, key: str, now: datetime, ttl: timedelta) -> bool:
         expires = self.leases.get(key)
@@ -264,25 +259,32 @@ def fake_deps(config: AppConfig, clock: Callable[[], datetime] | None = None) ->
 
 
 class FakeAgentRunner:
+    cost_usd = 0.0
+    budget_blocked = False
+
     def __init__(self, candidates, edits=None, lessons_text: str = "", tokens_per_call: int = 0,
-                 scout_error: Exception | None = None, lessons_error: Exception | None = None):
+                 scout_error: Exception | None = None, lessons_error: Exception | None = None,
+                 summary: str = ""):
         self.candidates = list(candidates)
         self.edits = edits or {}
         self.lessons_text = lessons_text
         self.tokens_per_call = tokens_per_call
         self.scout_error = scout_error
         self.lessons_error = lessons_error
+        self.summary = summary
         self.tokens_used = 0
         self.scout_calls = 0
         self.fix_calls: list[str] = []
         self.lessons_calls: list[list] = []
 
-    def scout(self, ws, inp):
+    def scout(self, ws, inp, discoveries=None):
+        from bed.agents.runner import ScoutOutput
+
         self.scout_calls += 1
         self.tokens_used += self.tokens_per_call
         if self.scout_error:
             raise self.scout_error
-        return list(self.candidates)
+        return ScoutOutput(candidates=list(self.candidates), summary=self.summary)
 
     def fix(self, ws, inp, candidate):
         from bed.agents.runner import FixerOutput

@@ -1,3 +1,4 @@
+import json
 from datetime import timedelta
 
 import boto3
@@ -5,6 +6,7 @@ import pytest
 from helpers import NOW, make_finding
 from moto import mock_aws
 
+from bed.core.budget import DailyBudget
 from bed.core.models import RunRecord
 from bed.platform.aws.state import DynamoStateStore
 
@@ -66,39 +68,55 @@ def test_lease_is_exclusive_until_expiry(store):
     assert store.try_lease("start#acme/web", NOW + timedelta(minutes=6), timedelta(minutes=5))
 
 
+def test_update_meta_writes_the_change_and_skips_when_unchanged(store):
+    assert store.update_meta("k", lambda old: "v1" if old is None else None) == "v1"
+    assert store.update_meta("k", lambda old: None) == "v1"
+    assert store.update_meta("k", lambda old: old + "+") == "v1+"
+    assert store.get_meta("k") == "v1+"
+
+
+def budget(store):
+    return DailyBudget(store, "acme/web", "2026-11-20")
+
+
 def test_budget_reservation_is_idempotent_and_capped(store):
-    assert store.reserve_budget("budget", "first", 3, 3.7) == 3
-    assert store.reserve_budget("budget", "first", 3, 3.7) == 3
-    assert store.reserve_budget("budget", "second", 3, 3.7) == 0.7
-    assert store.reserve_budget("budget", "third", 3, 3.7) == 0
+    assert budget(store).reserve("first", 3.7) == 3.7
+    assert budget(store).reserve("first", 3.7) == 3.7
+    assert budget(store).reserve("second", 3.7) == 0
+    budget(store).settle("first", 3)
+    assert budget(store).reserve("third", 3.7) == 0.7
 
 
 def test_budget_compare_and_swap_handles_an_overlapping_start(store, monkeypatch):
     put = store.table.put_item
     other = DynamoStateStore("bed")
+    budget(other).reserve("earlier", 3.7)
+    budget(other).settle("earlier", 1)
     raced = False
 
     def racing_put(**kwargs):
         nonlocal raced
         if not raced:
             raced = True
-            assert other.reserve_budget("budget", "other", 3, 3.7) == 3
+            assert budget(other).reserve("other", 3.7) == 2.7
         return put(**kwargs)
 
     monkeypatch.setattr(store.table, "put_item", racing_put)
-    assert store.reserve_budget("budget", "ours", 3, 3.7) == 0.7
-    assert other.reserve_budget("budget", "later", 3, 3.7) == 0
+    assert budget(store).reserve("ours", 3.7) == 0
+    assert json.loads(store.get_meta("budget#daily#acme/web#2026-11-20")) == {"earlier": 1, "other": 2.7}
 
 
 def test_settlement_releases_only_unused_allowance_idempotently(store):
-    assert store.reserve_budget("daily", "first", 15, 15) == 15
-    store.settle_budget("daily", "first", 1.5)
-    store.settle_budget("daily", "first", 1.5)
-    assert store.reserve_budget("daily", "next", 15, 15) == 13.5
+    assert budget(store).reserve("first", 15) == 15
+    budget(store).settle("first", 1.5)
+    budget(store).settle("first", 1.5)
+    assert budget(store).reserve("next", 15) == 13.5
 
 
 def test_settlement_retries_without_overwriting_concurrent_reservations(store, monkeypatch):
-    assert store.reserve_budget("daily", "first", 5, 15) == 5
+    assert budget(store).reserve("first", 15) == 15
+    budget(store).settle("first", 5)
+    assert budget(store).reserve("second", 15) == 10
     other = DynamoStateStore("bed")
     original = store.table.put_item
     raced = False
@@ -107,9 +125,9 @@ def test_settlement_retries_without_overwriting_concurrent_reservations(store, m
         nonlocal raced
         if not raced:
             raced = True
-            assert other.reserve_budget("daily", "other", 5, 15) == 5
+            budget(other).settle("second", 4)
         return original(**kwargs)
 
     monkeypatch.setattr(store.table, "put_item", put)
-    store.settle_budget("daily", "first", 1)
-    assert other.reserve_budget("daily", "last", 15, 15) == 9
+    budget(store).settle("first", 1)
+    assert budget(other).reserve("last", 15) == 10

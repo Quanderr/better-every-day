@@ -7,11 +7,11 @@ from bed.core.control.publish import (
     branch_name,
     commit_message,
     commit_subject,
-    handle_result,
     pr_body,
     publish_one,
     ticket_body,
 )
+from bed.core.control.results import handle_result
 from bed.core.control.start_run import start_run
 from bed.core.fingerprint import fingerprint
 from bed.core.models import FileChange, FixResult, WorkerResult

@@ -1,61 +1,107 @@
-from collections.abc import Callable
-from threading import RLock
+from __future__ import annotations
+
+from collections.abc import Callable, Collection
+from threading import Lock
+from typing import TYPE_CHECKING
 
 from bed.core.fingerprint import fingerprint
 from bed.core.gates import is_safe_path
-from bed.core.models import Candidate, ExplorationMemory, WorkerInput, WorkerResult
+from bed.core.models import (
+    EXPLORATION_BACKLOG_MAX,
+    EXPLORATION_MAX_BYTES,
+    EXPLORATION_SUMMARY_MAX,
+    Candidate,
+    Checkpoint,
+    ExplorationMemory,
+    WorkerInput,
+)
+
+if TYPE_CHECKING:
+    from bed.agents.runner import AgentRunner
+
+CHECKPOINT_MAX_BYTES = EXPLORATION_MAX_BYTES - 5_000
+CANDIDATE_FILES_MAX = 5
+CANDIDATE_PATH_MAX_BYTES = 1024
+CANDIDATE_TEXT_MAX = {"title": 200, "symbol": 200, "issue_kind": 100, "evidence": 2000, "rationale": 1000}
+
+
+def _pending(memory: ExplorationMemory, known: Collection[str]) -> list[Candidate]:
+    excluded = {*memory.attempted, *known}
+    return [c for c in memory.candidates if fingerprint(c) not in excluded]
+
+
+def _exhausted(memory: ExplorationMemory, known: Collection[str]) -> bool:
+    return memory.complete and not _pending(memory, known)
+
+
+def resumes_backlog(inp: WorkerInput) -> bool:
+    previous = inp.exploration
+    return (inp.memory_enabled and previous is not None and bool(previous.candidates)
+            and not _exhausted(previous, inp.known_fingerprints))
+
+
+def _clip(candidate: Candidate) -> Candidate:
+    texts = {name: getattr(candidate, name)[:limit] for name, limit in CANDIDATE_TEXT_MAX.items()}
+    return candidate.model_copy(update={**texts, "files": candidate.files[:CANDIDATE_FILES_MAX]})
+
+
+def _is_storable_path(path: str) -> bool:
+    return is_safe_path(path) and len(path.encode()) <= CANDIDATE_PATH_MAX_BYTES
 
 
 class ExplorationJournal:
-    def __init__(self, inp: WorkerInput, base_sha: str, emit: Callable[[WorkerResult], None], agents):
+    def __init__(self, inp: WorkerInput, base_sha: str, emit: Callable[[Checkpoint], None], agents: AgentRunner):
         self.inp, self.emit, self.agents = inp, emit, agents
-        self.lock = RLock()
+        self.lock = Lock()
         previous = inp.exploration
-        self.memory = previous.model_copy(update={"base_sha": base_sha}) if previous else ExplorationMemory(
-            generation=inp.run_id, base_sha=base_sha)
-        if previous and previous.complete and not self.pending:
-            self.memory = ExplorationMemory(generation=inp.run_id, base_sha=base_sha, summary=previous.summary)
+        if previous is None or _exhausted(previous, inp.known_fingerprints):
+            self.memory = ExplorationMemory(generation=inp.run_id, base_sha=base_sha,
+                                            summary=previous.summary if previous else "")
+        else:
+            self.memory = previous.model_copy(update={"base_sha": base_sha})
 
     @property
     def pending(self) -> list[Candidate]:
-        excluded = set(self.memory.attempted) | set(self.inp.known_fingerprints)
-        return [c for c in self.memory.candidates if fingerprint(c) not in excluded]
+        return _pending(self.memory, self.inp.known_fingerprints)
 
-    def flush(self):
-        self.emit(WorkerResult(run_id=self.inp.run_id, repo=self.inp.repo.name,
-            base_sha=self.memory.base_sha, status="started", kind="checkpoint", nonce=self.inp.nonce,
-            exploration=self.memory, tokens_used=self.agents.tokens_used,
-            cost_usd=getattr(self.agents, "cost_usd", 0)))
-
-    def remember(self, candidate: Candidate | None, summary: str) -> str:
+    def remember_context(self, summary: str) -> str:
         with self.lock:
-            return self._remember(candidate, summary)
+            return self._save(self.memory.model_copy(update={"summary": summary[:EXPLORATION_SUMMARY_MAX]})
+                              if summary else self.memory)
 
-    def _remember(self, candidate: Candidate | None, summary: str) -> str:
-        previous = self.memory
-        if summary:
-            self.memory = self.memory.model_copy(update={"summary": summary[:8000]})
-        if candidate is not None:
-            if not candidate.files or any(not is_safe_path(p) or len(p.encode()) > 1024 for p in candidate.files):
+    def remember_finding(self, candidate: Candidate) -> str:
+        with self.lock:
+            if not candidate.files or not all(_is_storable_path(p) for p in candidate.files):
                 return "Invalid candidate path."
-            if len(self.memory.candidates) >= 12:
+            if len(self.memory.candidates) >= EXPLORATION_BACKLOG_MAX:
                 return "Backlog full. Return the current findings now."
-            candidate = candidate.model_copy(update={
-                "title": candidate.title[:200], "files": candidate.files[:5], "symbol": candidate.symbol[:200],
-                "issue_kind": candidate.issue_kind[:100], "evidence": candidate.evidence[:2000],
-                "rationale": candidate.rationale[:1000],
-            })
-            if fingerprint(candidate) in self.inp.known_fingerprints:
+            candidate = _clip(candidate)
+            fp = fingerprint(candidate)
+            if fp in self.inp.known_fingerprints:
                 return "Already reported. Look for a different finding."
-            if fingerprint(candidate) not in {fingerprint(c) for c in self.memory.candidates}:
-                self.memory = self.memory.model_copy(update={"candidates": [*self.memory.candidates, candidate]})
-        if len(self.memory.model_dump_json().encode()) > 55_000:
-            self.memory = previous
-            return "Checkpoint capacity reached. Return the saved findings now."
-        self.flush()
-        return f"Saved context and {len(self.memory.candidates)} findings."
+            if fp in {fingerprint(c) for c in self.memory.candidates}:
+                return self._save(self.memory)
+            return self._save(self.memory.model_copy(update={"candidates": [*self.memory.candidates, candidate]}))
 
-    def attempted(self, candidate: Candidate):
-        fp = fingerprint(candidate)
-        self.memory = self.memory.model_copy(update={"attempted": [*self.memory.attempted, fp]})
-        self.flush()
+    def attempted(self, candidate: Candidate) -> None:
+        self._commit({"attempted": [*self.memory.attempted, fingerprint(candidate)]})
+
+    def complete(self, summary: str) -> None:
+        self.remember_context(summary)
+        self._commit({"complete": True})
+
+    def _save(self, memory: ExplorationMemory) -> str:
+        if len(memory.model_dump_json().encode()) > CHECKPOINT_MAX_BYTES:
+            return "Checkpoint capacity reached. Return the saved findings now."
+        self.memory = memory
+        self._flush()
+        return f"Saved context and {len(memory.candidates)} findings."
+
+    def _commit(self, update: dict) -> None:
+        self.memory = self.memory.model_copy(update=update)
+        self._flush()
+
+    def _flush(self) -> None:
+        self.emit(Checkpoint(run_id=self.inp.run_id, repo=self.inp.repo.name, base_sha=self.memory.base_sha,
+                             nonce=self.inp.nonce, exploration=self.memory, tokens_used=self.agents.tokens_used,
+                             cost_usd=self.agents.cost_usd))

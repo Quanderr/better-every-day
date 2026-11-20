@@ -1,9 +1,18 @@
+from collections.abc import Callable
 from datetime import datetime, timedelta
 from typing import Literal, Protocol
 
 from pydantic import BaseModel
 
-from bed.core.models import ExplorationMemory, FileChange, Finding, RunRecord, WorkerInput, WorkerResult
+from bed.core.models import (
+    Checkpoint,
+    ExplorationMemory,
+    FileChange,
+    Finding,
+    RunRecord,
+    WorkerInput,
+    WorkerResult,
+)
 
 
 class VcsError(Exception):
@@ -82,7 +91,7 @@ class AgentRuntime(Protocol):
 
 
 class ResultSink(Protocol):
-    def emit(self, result: WorkerResult) -> None: ...
+    def emit(self, message: WorkerResult | Checkpoint) -> None: ...
 
 
 class SecretStore(Protocol):
@@ -95,9 +104,6 @@ class ExplorationStore(Protocol):
 
 
 class StateStore(Protocol):
-    def settle_budget(self, key: str, run_id: str, cost: float) -> None: ...
-
-    def reserve_budget(self, key: str, run_id: str, requested: float, maximum: float) -> float: ...
     def put_run(self, run: RunRecord) -> None: ...
     def get_run(self, repo: str, run_id: str) -> RunRecord | None: ...
     def list_runs(self, repo: str, since: datetime) -> list[RunRecord]: ...
@@ -108,4 +114,5 @@ class StateStore(Protocol):
     def put_lessons(self, repo: str, text: str) -> None: ...
     def get_meta(self, key: str) -> str | None: ...
     def put_meta(self, key: str, value: str) -> None: ...
+    def update_meta(self, key: str, change: Callable[[str | None], str | None]) -> str | None: ...
     def try_lease(self, key: str, now: datetime, ttl: timedelta) -> bool: ...

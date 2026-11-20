@@ -1,14 +1,13 @@
 import logging
 from collections.abc import Callable
 
-from bed.agents.runner import AgentRunner
+from bed.agents.runner import AgentRunner, run_deadline
 from bed.core.fingerprint import fingerprint, normalize_path
-from bed.core.models import Candidate, FixResult, WorkerInput, WorkerResult
+from bed.core.models import Candidate, Checkpoint, FixResult, WorkerInput, WorkerResult
 from bed.worker.exploration import ExplorationJournal
 from bed.worker.workspace import Workspace, WorkspaceError, WorkspaceFull
 
 log = logging.getLogger(__name__)
-TIME_MARGIN_S = 120
 ERROR_TAIL = 4000
 VERIFY_LOG_TAIL = 4000
 
@@ -22,23 +21,21 @@ class _Budget:
 
     def exhausted(self) -> bool:
         limits = self.inp.repo.limits
-        if getattr(getattr(self.agents, "spending", None), "blocked", False):
+        if self.agents.budget_blocked or self.agents.tokens_used >= limits.token_budget:
             return True
-        if self.agents.tokens_used >= limits.token_budget:
-            return True
-        return self.clock() - self.start >= limits.timeout_minutes * 60 - TIME_MARGIN_S
+        return self.clock() >= run_deadline(limits, self.start)
 
 
 def run_worker(inp: WorkerInput, ws: Workspace, agents: AgentRunner, clock: Callable[[], float],
-               checkpoint: Callable[[WorkerResult], None] | None = None) -> WorkerResult:
+               checkpoint: Callable[[Checkpoint], None]) -> WorkerResult:
     base_sha = ""
-    journal = None
+    journal: ExplorationJournal | None = None
 
     def result(status, results=(), lessons=None, error=None) -> WorkerResult:
         return WorkerResult(run_id=inp.run_id, repo=inp.repo.name, base_sha=base_sha, status=status,
                             results=list(results), lessons=lessons, tokens_used=agents.tokens_used, error=error,
                             nonce=inp.nonce, exploration=journal.memory if journal else None,
-                            cost_usd=getattr(agents, "cost_usd", 0))
+                            cost_usd=agents.cost_usd)
 
     budget = _Budget(inp, agents, clock)
     sandbox = inp.repo.verify.mode == "sandbox"
@@ -59,25 +56,15 @@ def run_worker(inp: WorkerInput, ws: Workspace, agents: AgentRunner, clock: Call
         except WorkspaceError as e:
             return result("failed", error=str(e)[-ERROR_TAIL:])
         if inp.memory_enabled:
-            if checkpoint is None:
-                raise ValueError("exploration caching requires a checkpoint sink")
             journal = ExplorationJournal(inp, base_sha, checkpoint, agents)
             if not journal.pending:
-                log.info("exploring repository; generation=%s", journal.memory.generation)
-                agents.discovery = journal.remember
-                scoped = inp.model_copy(update={"exploration": journal.memory})
-                candidates = agents.scout(ws, scoped)
-                for candidate in candidates:
-                    journal.remember(candidate, "")
-                journal.remember(None, getattr(agents, "last_summary", ""))
-                journal.memory = journal.memory.model_copy(update={"complete": True})
-                journal.flush()
+                _explore(inp, ws, agents, journal)
                 return result("ok")
             log.info("using cached exploration; pending=%d", len(journal.pending))
-            candidates = _filter(journal.pending, inp)
+            candidates = journal.pending
         else:
-            candidates = _filter(agents.scout(ws, inp), inp)
-        results = _fix_all(candidates, inp, ws, agents, budget, journal)
+            candidates = agents.scout(ws, inp).candidates
+        results = _fix_all(_filter(candidates, inp), inp, ws, agents, budget, journal)
         lessons = _lessons(inp, agents, budget)
         _log_usage(ws, "at end")
         return result("ok", results, lessons)
@@ -86,6 +73,14 @@ def run_worker(inp: WorkerInput, ws: Workspace, agents: AgentRunner, clock: Call
     except Exception as e:
         log.exception("worker run failed")
         return result("failed", error=repr(e)[-ERROR_TAIL:])
+
+
+def _explore(inp: WorkerInput, ws: Workspace, agents: AgentRunner, journal: ExplorationJournal) -> None:
+    log.info("exploring repository; generation=%s", journal.memory.generation)
+    found = agents.scout(ws, inp.model_copy(update={"exploration": journal.memory}), journal)
+    for candidate in found.candidates:
+        journal.remember_finding(candidate)
+    journal.complete(found.summary)
 
 
 def _lessons(inp: WorkerInput, agents: AgentRunner, budget: _Budget) -> str | None:
@@ -113,7 +108,7 @@ def _filter(candidates: list[Candidate], inp: WorkerInput) -> list[Candidate]:
 
 
 def _fix_all(candidates: list[Candidate], inp: WorkerInput, ws: Workspace, agents: AgentRunner,
-             budget: _Budget, journal: ExplorationJournal | None = None) -> list[FixResult]:
+             budget: _Budget, journal: ExplorationJournal | None) -> list[FixResult]:
     cap = inp.repo.limits.max_prs_per_run
     results: list[FixResult] = []
     for attempt, candidate in enumerate(candidates):
