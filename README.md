@@ -324,3 +324,7 @@ uv run ruff check
 - GitHub Enterprise is not supported: `api_url` changes the API host, but the worker always clones from `github.com`.
 - GitLab deploy tokens are not supported (the worker authenticates as `x-access-token`); use project or group access tokens.
 - AWS is the only supported cloud.
+
+## License
+
+Licensed under the [MIT License](LICENSE).
