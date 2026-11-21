@@ -52,9 +52,9 @@ resource "aws_s3_bucket_server_side_encryption_configuration" "config" {
 resource "aws_s3_object" "config" {
   bucket       = aws_s3_bucket.config.id
   key          = local.config_key
-  content      = file(var.config_path)
+  source       = var.config_path
   content_type = "application/yaml"
-  etag         = filemd5(var.config_path)
+  source_hash  = filemd5(var.config_path)
 
   lifecycle {
     precondition {

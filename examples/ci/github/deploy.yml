@@ -27,6 +27,8 @@ env:
   TF_VAR_worker_image_tag: ${{ github.sha }}
   TF_VAR_control_image_tag: ${{ github.sha }}
 
+# Terraform plan/apply output is private: old state may contain config YAML.
+# Do not print captured output or upload plans, even when a command fails.
 jobs:
   check:
     runs-on: ubuntu-latest
@@ -73,7 +75,7 @@ jobs:
             -backend-config="key=${{ vars.TF_STATE_KEY || 'better-every-day/terraform.tfstate' }}" \
             -backend-config="region=${{ vars.AWS_REGION }}" \
             -backend-config="use_lockfile=true"
-      - run: terraform -chdir="$TF_DIR" plan -lock=false
+      - run: terraform -chdir="$TF_DIR" plan -lock=false >/dev/null 2>&1
 
   images:
     permissions:
@@ -104,7 +106,7 @@ jobs:
             -backend-config="region=${{ vars.AWS_REGION }}" \
             -backend-config="use_lockfile=true"
       - name: ensure ECR repositories
-        run: terraform -chdir="$TF_DIR" apply -auto-approve -target=aws_ecr_repository.worker -target=aws_ecr_repository.control
+        run: terraform -chdir="$TF_DIR" apply -auto-approve -target=aws_ecr_repository.worker -target=aws_ecr_repository.control >/dev/null 2>&1
       - name: build and push images
         run: |
           set -euo pipefail
@@ -150,18 +152,7 @@ jobs:
             -backend-config="region=${{ vars.AWS_REGION }}" \
             -backend-config="use_lockfile=true"
       - name: terraform plan
-        run: |
-          terraform -chdir="$TF_DIR" plan -lock=false -out=tfplan
-          {
-            echo '```'
-            terraform -chdir="$TF_DIR" show -no-color tfplan | tail -c 60000
-            echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        with:
-          name: tfplan
-          path: ${{ env.TF_DIR }}/tfplan
-          retention-days: 5
+        run: terraform -chdir="$TF_DIR" plan -lock=false >/dev/null 2>&1
 
   apply:
     permissions:
@@ -191,8 +182,5 @@ jobs:
             -backend-config="key=${{ vars.TF_STATE_KEY || 'better-every-day/terraform.tfstate' }}" \
             -backend-config="region=${{ vars.AWS_REGION }}" \
             -backend-config="use_lockfile=true"
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
-        with:
-          name: tfplan
-          path: ${{ env.TF_DIR }}
-      - run: terraform -chdir="$TF_DIR" apply tfplan
+      # Re-plan after approval; never transfer a plaintext plan as an artifact.
+      - run: terraform -chdir="$TF_DIR" apply -auto-approve >/dev/null 2>&1

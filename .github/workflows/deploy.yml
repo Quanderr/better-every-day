@@ -29,6 +29,8 @@ env:
   TF_VAR_worker_image_tag: ${{ github.sha }}
   TF_VAR_control_image_tag: ${{ github.sha }}
 
+# Terraform plan/apply output is private: old state may contain config YAML.
+# Do not print captured output or upload plans, even when a command fails.
 jobs:
   check:
     runs-on: ubuntu-latest
@@ -87,7 +89,7 @@ jobs:
             -backend-config="region=${{ vars.AWS_REGION }}" \
             -backend-config="use_lockfile=true"
       - name: ensure ECR repositories
-        run: terraform -chdir="$TF_DIR" apply -auto-approve -target=aws_ecr_repository.worker -target=aws_ecr_repository.control
+        run: terraform -chdir="$TF_DIR" apply -auto-approve -target=aws_ecr_repository.worker -target=aws_ecr_repository.control >/dev/null 2>&1
       - name: build and push images
         run: |
           set -euo pipefail
@@ -144,33 +146,7 @@ jobs:
             -backend-config="region=${{ vars.AWS_REGION }}" \
             -backend-config="use_lockfile=true"
       - name: terraform plan
-        run: |
-          terraform -chdir="$TF_DIR" plan -lock=false -out=tfplan
-          terraform -chdir="$TF_DIR" show -json tfplan > "$RUNNER_TEMP/plan.json"
-          python - "$RUNNER_TEMP/plan.json" <<'PY'
-          import json
-          import sys
-          plan = json.load(open(sys.argv[1]))
-          for resource in plan.get("resource_changes", []):
-              after = resource["change"].get("after")
-              if not after:
-                  continue
-              kind = resource["type"]
-              assert not kind.startswith("aws_networkfirewall_"), resource["address"]
-              assert kind != "aws_instance", resource["address"]
-              assert kind != "aws_vpc_endpoint" or after.get("vpc_endpoint_type") != "Interface", resource["address"]
-          print("Cheap-mode plan verified: no Network Firewall, EC2 proxy, or paid interface endpoints")
-          PY
-          {
-            echo '```'
-            terraform -chdir="$TF_DIR" show -no-color tfplan | tail -c 60000
-            echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        with:
-          name: tfplan
-          path: ${{ env.TF_DIR }}/tfplan
-          retention-days: 1
+        run: terraform -chdir="$TF_DIR" plan -lock=false >/dev/null 2>&1
 
   apply:
     permissions:
@@ -228,8 +204,25 @@ jobs:
             -backend-config="key=${{ vars.TF_STATE_KEY || 'better-every-day/terraform.tfstate' }}" \
             -backend-config="region=${{ vars.AWS_REGION }}" \
             -backend-config="use_lockfile=true"
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
-        with:
-          name: tfplan
-          path: ${{ env.TF_DIR }}
-      - run: terraform -chdir="$TF_DIR" apply tfplan
+      - name: plan, verify and apply on the same runner
+        run: |
+          set -euo pipefail
+          umask 077
+          trap 'rm -f "$RUNNER_TEMP/deploy.tfplan" "$RUNNER_TEMP/plan.json" "$BED_CONFIG_PATH"' EXIT
+          terraform -chdir="$TF_DIR" plan -out="$RUNNER_TEMP/deploy.tfplan" >/dev/null 2>&1
+          terraform -chdir="$TF_DIR" show -json "$RUNNER_TEMP/deploy.tfplan" > "$RUNNER_TEMP/plan.json" 2>/dev/null
+          python - "$RUNNER_TEMP/plan.json" <<'PY'
+          import json
+          import sys
+          plan = json.load(open(sys.argv[1]))
+          for resource in plan.get("resource_changes", []):
+              after = resource["change"].get("after")
+              if not after:
+                  continue
+              kind = resource["type"]
+              assert not kind.startswith("aws_networkfirewall_"), resource["address"]
+              assert kind != "aws_instance", resource["address"]
+              assert kind != "aws_vpc_endpoint" or after.get("vpc_endpoint_type") != "Interface", resource["address"]
+          print("Cheap-mode plan verified: no Network Firewall, EC2 proxy, or paid interface endpoints")
+          PY
+          terraform -chdir="$TF_DIR" apply "$RUNNER_TEMP/deploy.tfplan" >/dev/null 2>&1
