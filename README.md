@@ -9,6 +9,7 @@ A self-hosted service that makes selected repositories a little better every day
 - **Control plane** (AWS Lambda, trusted): loads config, syncs outcomes of earlier bot PRs, applies backpressure, starts worker sessions, gates results, creates tickets, pushes branches, opens PRs, sends the summary. Holds all write credentials. Makes no model calls and runs no repo code.
 - **Worker** (Bedrock AgentCore Runtime session, untrusted): clones with a short-lived read-only token, installs toolchains with `mise`, runs a scout agent and a fixer agent (Strands, Opus on Bedrock), verifies with the repo's commands and returns file changes over SQS. It never sees VCS write or tracker credentials.
 - **Exploration memory** (AgentCore Memory): stores a compact repository map, candidate backlog and attempted findings across worker sessions. Workers send incremental checkpoints over SQS; the control plane validates them, writes snapshots to Memory and keeps the latest snapshot pointer in DynamoDB. Later runs recheck and fix cached findings without scouting again; exploration resumes when the backlog is exhausted. Memory is treated as untrusted repository data, and automatic memory extraction is disabled to avoid extra model calls.
+- **Dependency cache** (S3): after a green baseline and before any agent runs, the worker uploads its `mise` toolchains and package-manager caches as one archive per repository; later sessions restore it before installing. The control plane hands each session one-hour credentials limited to that repository's object, so one repository cannot read or poison another's cache.
 - **Untrusted worker output**: the control plane checks that the worker's base commit is on the base branch and recomputes every fingerprint itself.
 - **Gates in code**: diff size, file count, excluded and protected paths, path safety, overlap with open bot PRs, duplicate fingerprints, green verification. Rejections are recorded, never published.
 - **Idempotent publish**: ticket, branch and PR are looked up before being created, and every step is saved, so a redelivered or retried result never creates a second ticket or PR.
@@ -21,9 +22,9 @@ src/bed/core          models, config, gates, ports, control-plane logic
 src/bed/agents        prompts, workspace tools, Strands runner
 src/bed/worker        shell, workspace, pipeline, AgentCore entrypoint
 src/bed/connectors    github, gitlab, linear, jira, slack, shared HTTP client
-src/bed/platform/aws  DynamoDB, Secrets Manager, SQS, AgentCore Runtime and Memory, Lambda handlers
+src/bed/platform/aws  DynamoDB, Secrets Manager, SQS, S3 dependency cache, AgentCore Runtime and Memory, Lambda handlers
 docker/               worker and control images (linux/arm64)
-infra/terraform/aws   VPC, firewall or egress proxy, runtime, memory, Lambdas, table, queue, schedules
+infra/terraform/aws   VPC, firewall or egress proxy, runtime, memory, cache bucket, Lambdas, table, queue, schedules
 config/               example configurations (GitHub + Linear, GitLab + Jira, no tracker)
 examples/ci/          copy-ready GitHub Actions and GitLab CI deploy pipelines
 ```
@@ -63,6 +64,7 @@ One YAML file, validated with `uv run bed validate <path>` and again at `terrafo
 | `repos[].protected_paths`                                                                       | Extra globs always rejected, added to the built-in list                                                                                                     | `[]`                 |
 | `repos[].prompt`                                                                                | Repo guidance (prompt layer 3)                                                                                                                              | `""`                 |
 | `repos[].categories`, `repos[].limits`                                                          | Override the defaults; limits merge key by key                                                                                                              | defaults             |
+| `repos[].cache`                                                                                 | Reuse toolchains and package caches between runs (see Dependency cache); also accepted in `defaults`                                                        | `true`               |
 
 Bot PRs/MRs are found by the `better-every-day` label. Do not remove it: unlabelled bot PRs are invisible to outcome sync, overlap checks and `max_open_bot_prs`.
 
@@ -315,6 +317,17 @@ Worker egress is limited by AWS Network Firewall to the domains in `infra/terraf
 
 The built-in allowlist covers GitHub, gitlab.com, npm/yarn, PyPI, RubyGems, Maven Central, Gradle, the Go module proxy, mise, nodejs.org, java.net, go.dev and ruby-lang.org. Other ecosystems (for example Rust: `static.rust-lang.org`, `.crates.io`) and private registries need `-var 'extra_allowed_domains=[...]'`; a domain starting with `.` matches subdomains.
 
+### Dependency cache
+
+Each repository has one archive in the `<name>-cache-*` bucket, holding the `mise` data directory and the package-manager caches under the worker's home; only these directories are taken from an archive on restore, and symlinked ones are skipped (`~/.cache`, `~/.npm`, pnpm, Yarn Berry, Bun, Maven, Gradle, Go modules, Cargo registry). Dependencies installed into the clone itself (`node_modules`, `.venv`) are not archived; they are reinstalled from the restored caches.
+
+- The archive is tagged with a fingerprint of the toolchain version files, the lockfiles and `verify.install`. An exact match is restored and not uploaded again. A different fingerprint is still restored, topped up by the install, and uploaded again.
+- An archive lineage lives for 7 days from its first clean build; after that the next run installs from scratch and starts a new one. This bounds both growth and how long a bad cache can survive. Objects untouched for `cache_expiry_days` (default 30) are deleted.
+- The upload happens after install and a green baseline, before the scout or fixer runs, so agent edits never reach the cache. Install scripts and tests of the base branch do: a malicious dependency that ran once can leave something in the archive for that repository until the lineage ends. Set `cache: false` on a repo (or in `defaults`) to keep every run from scratch.
+- Cache credentials are an STS session of the `<name>-cache-*` role, scoped by session policy to the repository's object, valid one hour and usable only through the VPC's S3 gateway endpoint. The hour starts when the run starts and cannot be extended (role chaining), so a repo whose clone, toolchain install, dependency install and baseline together take longer does not get its cache saved. The worker role itself has no S3 permissions.
+- Every cache step is best effort: a failed restore, upload or credential grant is logged and the run continues from scratch. A restored cache followed by a failed install or a full disk before the upload is deleted. The cache session cannot list the bucket, so S3 answers a missing archive and a denied read with the same 403; both are logged as such and treated as a miss, and a misconfigured role or endpoint policy shows up as a failed upload in the worker log. Archives over 1 GiB are not stored.
+- To drop a cache by hand, delete the object under `repos/` in the bucket.
+
 ## Add a connector
 
 1. Implement the matching Protocol from `bed.core.ports` (`VcsConnector`, `TrackerConnector` or `NotifierConnector`).
@@ -332,8 +345,7 @@ uv run ruff check
 ## Limits
 
 - No Docker inside the worker: repos whose tests need services should use `verify.mode: ci`.
-- No cache between runs; every run installs toolchains and dependencies from scratch.
-- Session storage is capped around 1 GB; a full disk ends the run as `workspace_full`. Disk usage and file count per run are logged by the worker.
+- Session storage is capped around 1 GB, restored dependency cache included; a full disk ends the run as `workspace_full`. Disk usage and file count per run are logged by the worker.
 - No replies to review comments, no auto-merge.
 - GitLab deploy tokens are not supported (the worker authenticates as `x-access-token`); use project or group access tokens.
 - AWS is the only supported cloud.

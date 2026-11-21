@@ -11,6 +11,7 @@ from bed.core.control.deps import ControlDeps
 from bed.core.control.results import handle_result
 from bed.core.control.start_run import start_run
 from bed.core.control.summary import send_summary
+from bed.platform.aws.cache import StsCacheGrants
 from bed.platform.aws.eventbus import parse_result
 from bed.platform.aws.memory import AgentCoreExplorationStore
 from bed.platform.aws.runtime import AgentCoreRuntime
@@ -33,6 +34,8 @@ def build_deps() -> ControlDeps:
         secrets=SecretsManagerStore(),
         clock=lambda: datetime.now(UTC),
         memory=AgentCoreExplorationStore(os.environ["BED_MEMORY_ID"], state) if os.getenv("BED_MEMORY_ID") else None,
+        cache=StsCacheGrants(os.environ["BED_CACHE_BUCKET"], os.environ["BED_CACHE_ROLE_ARN"])
+        if os.getenv("BED_CACHE_BUCKET") else None,
     )
 
 

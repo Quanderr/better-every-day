@@ -4,6 +4,7 @@ from collections.abc import Callable
 from bed.agents.runner import AgentRunner, run_deadline
 from bed.core.fingerprint import fingerprint, normalize_path
 from bed.core.models import Candidate, Checkpoint, FixResult, WorkerInput, WorkerResult
+from bed.worker.depcache import DependencyCache, NoCache
 from bed.worker.exploration import ExplorationJournal
 from bed.worker.workspace import Workspace, WorkspaceError, WorkspaceFull
 
@@ -27,7 +28,8 @@ class _Budget:
 
 
 def run_worker(inp: WorkerInput, ws: Workspace, agents: AgentRunner, clock: Callable[[], float],
-               checkpoint: Callable[[Checkpoint], None]) -> WorkerResult:
+               checkpoint: Callable[[Checkpoint], None],
+               cache: DependencyCache | NoCache | None = None) -> WorkerResult:
     base_sha = ""
     journal: ExplorationJournal | None = None
 
@@ -37,20 +39,27 @@ def run_worker(inp: WorkerInput, ws: Workspace, agents: AgentRunner, clock: Call
                             nonce=inp.nonce, exploration=journal.memory if journal else None,
                             cost_usd=agents.cost_usd)
 
+    cache = cache or NoCache()
     budget = _Budget(inp, agents, clock)
     sandbox = inp.repo.verify.mode == "sandbox"
     try:
         try:
             base_sha = ws.clone(inp.clone_url, inp.read_token, inp.repo.base_branch)
-            ws.install_toolchains()
-            if sandbox:
-                ws.install(inp.repo.verify)
-            _log_usage(ws, "after install")
-            if sandbox:
-                baseline = ws.verify(inp.repo.verify)
-                if baseline.code != 0:
-                    return result("baseline_red", error=baseline.output[-ERROR_TAIL:])
-                ws.reset()
+            cache.restore(lambda: ws.dependency_fingerprint(inp.repo.verify))
+            try:
+                ws.install_toolchains()
+                if sandbox:
+                    ws.install(inp.repo.verify)
+                _log_usage(ws, "after install")
+                if sandbox:
+                    baseline = ws.verify(inp.repo.verify)
+                    if baseline.code != 0:
+                        return result("baseline_red", error=baseline.output[-ERROR_TAIL:])
+                    ws.reset()
+            except (WorkspaceError, WorkspaceFull):
+                cache.discard()
+                raise
+            cache.save()
         except WorkspaceFull:
             raise
         except WorkspaceError as e:

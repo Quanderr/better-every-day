@@ -1,12 +1,14 @@
+import io
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, BinaryIO
 
 from bed.core.control.deps import ControlDeps
 from bed.core.models import (
     AppConfig,
+    CacheGrant,
     Checkpoint,
     FileChange,
     Finding,
@@ -166,6 +168,46 @@ class FakeSink(Failing):
     def emit(self, message: WorkerResult | Checkpoint) -> None:
         self._maybe_fail("emit")
         self.emitted.append(message)
+
+
+class FakeCacheGrants(Failing):
+    def __init__(self) -> None:
+        super().__init__()
+        self.granted: list[str] = []
+
+    def grant(self, repo: str) -> CacheGrant:
+        self._maybe_fail("grant")
+        self.granted.append(repo)
+        return CacheGrant(bucket="cache", key=f"repos/{repo}", access_key_id="id", secret_access_key="secret",
+                          session_token="session")
+
+
+class FakeCacheStore(Failing):
+    def __init__(self) -> None:
+        super().__init__()
+        self.stored: tuple[dict[str, str], bytes] | None = None
+        self.uploads = 0
+        self.deletes = 0
+
+    def open(self) -> tuple[dict[str, str], BinaryIO] | None:
+        self._maybe_fail("open")
+        if self.stored is None:
+            return None
+        metadata, body = self.stored
+        return dict(metadata), io.BytesIO(body)
+
+    def upload(self, source: BinaryIO, metadata: dict[str, str]) -> None:
+        self._maybe_fail("upload")
+        chunks = []
+        while chunk := source.read(65536):
+            chunks.append(chunk)
+        self.stored = (dict(metadata), b"".join(chunks))
+        self.uploads += 1
+
+    def delete(self) -> None:
+        self._maybe_fail("delete")
+        self.stored = None
+        self.deletes += 1
 
 
 class FakeSecrets:

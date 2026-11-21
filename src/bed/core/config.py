@@ -9,7 +9,7 @@ from bed.core.models import AppConfig, ConnectorConfig
 
 CONNECTOR_KINDS = ("vcs", "tracker", "notifier")
 TOP_LEVEL_KEYS = {"model", "connectors", "notifications", "defaults", "repos"}
-DEFAULT_KEYS = {"prompt", "categories", "limits", "verify", "exclude_paths", "protected_paths", "base_branch"}
+DEFAULT_KEYS = {"prompt", "categories", "limits", "verify", "exclude_paths", "protected_paths", "base_branch", "cache"}
 
 
 class ConfigError(ValueError):

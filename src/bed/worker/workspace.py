@@ -1,5 +1,8 @@
 import errno
+import hashlib
+import json
 import os
+import platform
 import shutil
 from pathlib import Path
 
@@ -20,6 +23,12 @@ VERSION_FILES = (
     ".tool-versions", "mise.toml", ".mise.toml", ".nvmrc", ".node-version", ".python-version", ".ruby-version",
     ".java-version", "go.mod",
 )
+LOCK_FILES = (
+    "package-lock.json", "npm-shrinkwrap.json", "yarn.lock", "pnpm-lock.yaml", "bun.lockb", "bun.lock", "uv.lock",
+    "poetry.lock", "Pipfile.lock", "requirements*.txt", "Gemfile.lock", "go.sum", "Cargo.lock", "pom.xml",
+    "build.gradle", "build.gradle.kts", "gradle.lockfile", "gradle-wrapper.properties", "composer.lock",
+)
+CACHE_FORMAT = 1
 MISE_TIMEOUT_S = 600
 INSTALL_TIMEOUT_S = 1200
 VERIFY_TIMEOUT_S = 1200
@@ -93,6 +102,14 @@ class Workspace:
         if result.code != 0:
             raise WorkspaceError(f"mise install failed: {result.output[-2000:]}")
         self._mise = True
+
+    def dependency_fingerprint(self, verify: Verify) -> str:
+        specs = [f":(glob)**/{name}" for name in (*VERSION_FILES, *LOCK_FILES)]
+        listed = self._git("ls-files", "-s", "--", *specs)
+        if listed.code != 0:
+            raise WorkspaceError(f"ls-files failed: {listed.output[-2000:]}")
+        parts = [CACHE_FORMAT, platform.machine(), verify.install, listed.output]
+        return hashlib.sha256(json.dumps(parts).encode()).hexdigest()
 
     def exec(self, command: str, timeout_s: int) -> CmdResult:
         env = {**self._base_env(), "NODE_ENV": "test", "CI": "1"}

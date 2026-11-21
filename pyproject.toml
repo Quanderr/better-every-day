@@ -31,7 +31,7 @@ jira = "bed.connectors.jira:create"
 slack = "bed.connectors.slack:create"
 
 [dependency-groups]
-dev = ["pytest", "ruff", "respx", "moto[dynamodb,sqs,secretsmanager]"]
+dev = ["pytest", "ruff", "respx", "moto[dynamodb,sqs,secretsmanager,s3,sts]"]
 
 [build-system]
 requires = ["hatchling"]

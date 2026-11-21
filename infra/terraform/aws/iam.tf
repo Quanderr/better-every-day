@@ -145,6 +145,12 @@ data "aws_iam_policy_document" "control" {
   }
 
   statement {
+    sid       = "GrantDependencyCache"
+    actions   = ["sts:AssumeRole"]
+    resources = [aws_iam_role.cache.arn]
+  }
+
+  statement {
     sid     = "StartWorker"
     actions = ["bedrock-agentcore:InvokeAgentRuntime"]
     resources = [

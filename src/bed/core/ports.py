@@ -1,10 +1,11 @@
 from collections.abc import Callable
 from datetime import datetime, timedelta
-from typing import Literal, Protocol
+from typing import BinaryIO, Literal, Protocol
 
 from pydantic import BaseModel
 
 from bed.core.models import (
+    CacheGrant,
     Checkpoint,
     ExplorationMemory,
     FileChange,
@@ -101,6 +102,16 @@ class SecretStore(Protocol):
 class ExplorationStore(Protocol):
     def get(self, repo: str) -> ExplorationMemory | None: ...
     def put(self, repo: str, memory: ExplorationMemory, run_id: str) -> None: ...
+
+
+class CacheGrants(Protocol):
+    def grant(self, repo: str) -> CacheGrant: ...
+
+
+class CacheStore(Protocol):
+    def open(self) -> tuple[dict[str, str], BinaryIO] | None: ...
+    def upload(self, source: BinaryIO, metadata: dict[str, str]) -> None: ...
+    def delete(self) -> None: ...
 
 
 class StateStore(Protocol):

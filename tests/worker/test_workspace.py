@@ -215,3 +215,21 @@ def test_exec_env_is_allowlisted(ws, monkeypatch):
     monkeypatch.setenv("MISE_DATA_DIR", "/m")
     out = ws.exec("env", 5).output
     assert "SOME_RUNTIME_SECRET" not in out and "MISE_DATA_DIR=/m" in out and "PATH=" in out and "HOME=" in out
+
+
+def test_dependency_fingerprint_tracks_lockfiles_and_install_command(tmp_path):
+    from conftest import make_bare_repo
+
+    def fingerprint(name, files, install="npm ci"):
+        base = tmp_path / name
+        base.mkdir()
+        w = Workspace(base / "work")
+        w.clone(make_bare_repo(base, files), "t", "main")
+        return w.dependency_fingerprint(Verify(install=install, commands=["true"]))
+
+    files = {"a.py": "a = 1\n", "web/package-lock.json": "{}\n", ".nvmrc": "22\n"}
+    same = fingerprint("one", files)
+    assert same == fingerprint("two", {**files, "a.py": "a = 2\n"})
+    assert same != fingerprint("three", {**files, "web/package-lock.json": '{"v": 2}\n'})
+    assert same != fingerprint("four", {**files, ".nvmrc": "24\n"})
+    assert same != fingerprint("five", files, install="npm install")

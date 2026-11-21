@@ -14,7 +14,10 @@
         "s3:ListBucket", "s3:GetBucket*", "s3:GetAccelerateConfiguration", "s3:GetLifecycleConfiguration",
         "s3:GetReplicationConfiguration", "s3:GetEncryptionConfiguration", "s3:GetObject", "s3:GetObjectTagging"
       ],
-      "Resource": ["arn:aws:s3:::better-every-day-config-*", "arn:aws:s3:::better-every-day-config-*/config.yaml"]
+      "Resource": [
+        "arn:aws:s3:::better-every-day-config-*", "arn:aws:s3:::better-every-day-config-*/config.yaml",
+        "arn:aws:s3:::better-every-day-cache-*"
+      ]
     },
     {
       "Sid": "NetworkAndCompute",

@@ -143,6 +143,21 @@ data "aws_iam_policy_document" "s3_endpoint" {
   }
 
   statement {
+    sid       = "DependencyCache"
+    actions   = ["s3:PutObject", "s3:DeleteObject", "s3:AbortMultipartUpload"]
+    resources = ["${aws_s3_bucket.cache.arn}/repos/*"]
+    principals {
+      type        = "*"
+      identifiers = ["*"]
+    }
+    condition {
+      test     = "ArnEquals"
+      variable = "aws:PrincipalArn"
+      values   = [aws_iam_role.cache.arn]
+    }
+  }
+
+  statement {
     sid       = "EcrImageLayers"
     actions   = ["s3:GetObject"]
     resources = ["arn:aws:s3:::prod-${var.region}-starport-layer-bucket/*"]

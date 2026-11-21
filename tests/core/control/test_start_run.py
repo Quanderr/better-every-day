@@ -6,7 +6,7 @@ from helpers import NOW, example_config, make_finding
 from bed.core.control.start_run import new_run_id, session_id, start_run
 from bed.core.models import RunRecord
 from bed.core.ports import BotPr
-from bed.testing.fakes import fake_deps
+from bed.testing.fakes import FakeCacheGrants, fake_deps
 
 
 def deps_with(open_prs=0):
@@ -129,3 +129,30 @@ def test_timeout_marking_revokes_read_token():
                                  started_at=NOW - timedelta(hours=2), read_token_id="tok-old"))
     start_run("acme/web", deps)
     assert ("acme/web", "tok-old") in deps.fake_vcs.revoked
+
+
+def test_cache_grant_passed_to_worker_when_enabled():
+    deps = fake_deps(example_config())
+    deps.cache = FakeCacheGrants()
+    start_run("acme/web", deps)
+    assert deps.runtime.started[0][1].cache.key == "repos/acme/web"
+
+
+def test_cache_grant_skipped_when_repo_opts_out_or_no_cache_configured():
+    cfg = example_config()
+    repos = [r.model_copy(update={"cache": False}) for r in cfg.repos]
+    deps = fake_deps(cfg.model_copy(update={"repos": repos}))
+    deps.cache = FakeCacheGrants()
+    start_run("acme/web", deps)
+    assert deps.runtime.started[0][1].cache is None and deps.cache.granted == []
+    plain = fake_deps(example_config())
+    start_run("acme/web", plain)
+    assert plain.runtime.started[0][1].cache is None
+
+
+def test_cache_grant_failure_does_not_block_run():
+    deps = fake_deps(example_config())
+    deps.cache = FakeCacheGrants()
+    deps.cache.fail_next("grant")
+    run = start_run("acme/web", deps)
+    assert run.status == "started" and deps.runtime.started[0][1].cache is None

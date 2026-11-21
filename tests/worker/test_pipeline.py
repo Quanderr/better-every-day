@@ -225,3 +225,63 @@ def test_result_echoes_nonce(url, ws):
 
 def test_failed_result_echoes_nonce(tmp_path, ws):
     assert run(inp(f"file://{tmp_path}/missing.git"), ws, FakeAgentRunner([]), clock).nonce == "n" * 32
+
+
+class RecordingCache:
+    def __init__(self):
+        self.events = []
+        self.fingerprint = None
+
+    def restore(self, fingerprint):
+        self.fingerprint = fingerprint()
+        self.events.append("restore")
+
+    def save(self):
+        self.events.append("save")
+
+    def discard(self):
+        self.events.append("discard")
+
+
+def cached_inp(url, install, commands=(CHECK,)):
+    base = inp(url, commands=commands)
+    verify = base.repo.verify.model_copy(update={"install": install})
+    return base.model_copy(update={"repo": base.repo.model_copy(update={"verify": verify})})
+
+
+def test_cache_restored_before_install_and_saved_before_agents(url, ws):
+    cache = RecordingCache()
+    seen = []
+
+    def edit(workspace):
+        seen.append(list(cache.events))
+        return good("x")(workspace)
+
+    r = run_worker(cached_inp(url, "true"), ws, FakeAgentRunner(cands("x"), {"x": edit}), clock,
+                   lambda checkpoint: None, cache)
+    assert r.status == "ok" and seen == [["restore", "save"]] and cache.events == ["restore", "save"]
+    assert len(cache.fingerprint) == 64
+
+
+def test_failed_install_discards_cache(url, ws):
+    cache = RecordingCache()
+    r = run_worker(cached_inp(url, "false"), ws, FakeAgentRunner([]), clock, lambda checkpoint: None, cache)
+    assert r.status == "failed" and cache.events == ["restore", "discard"]
+
+
+def test_red_baseline_does_not_save_cache(url, ws):
+    cache = RecordingCache()
+    r = run_worker(cached_inp(url, "true", commands=["false"]), ws, FakeAgentRunner([]), clock,
+                   lambda checkpoint: None, cache)
+    assert r.status == "baseline_red" and cache.events == ["restore"]
+
+
+def test_full_disk_during_baseline_discards_cache(url, ws, monkeypatch):
+    cache = RecordingCache()
+
+    def full(verify):
+        raise WorkspaceFull("ENOSPC")
+
+    monkeypatch.setattr(ws, "verify", full)
+    r = run_worker(cached_inp(url, "true"), ws, FakeAgentRunner([]), clock, lambda checkpoint: None, cache)
+    assert r.status == "workspace_full" and cache.events == ["restore", "discard"]

@@ -14,6 +14,7 @@ from pydantic import ValidationError
 from bed.agents.runner import AgentRunner
 from bed.core.models import FixResult, WorkerInput, WorkerResult
 from bed.core.ports import ResultSink
+from bed.worker.depcache import DependencyCache, NoCache
 from bed.worker.pipeline import run_worker
 from bed.worker.workspace import Workspace
 
@@ -30,6 +31,7 @@ def handle_invocation(
     runner_factory: Callable[[WorkerInput], AgentRunner],
     spawn: Callable[[Callable[[], None]], None],
     workdir_base: Path = Path("/tmp"),
+    cache_factory: Callable[[WorkerInput], DependencyCache | NoCache] = lambda inp: NoCache(),
 ) -> dict:
     try:
         inp = WorkerInput.model_validate(payload)
@@ -49,7 +51,8 @@ def handle_invocation(
         agents = None
         try:
             agents = runner_factory(inp)
-            result = run_worker(inp, Workspace(workdir_base / inp.run_id), agents, time.monotonic, sink.emit)
+            result = run_worker(inp, Workspace(workdir_base / inp.run_id), agents, time.monotonic, sink.emit,
+                                cache_factory(inp))
         except Exception as e:
             log.exception("worker job crashed")
             result = WorkerResult(run_id=inp.run_id, repo=inp.repo.name, status="failed", error=repr(e),
@@ -119,13 +122,22 @@ def _runner(inp: WorkerInput) -> AgentRunner:
     return StrandsAgentRunner(inp)
 
 
+def _cache(inp: WorkerInput) -> DependencyCache | NoCache:
+    if inp.cache is None:
+        return NoCache()
+    from bed.platform.aws.cache import S3CacheStore
+
+    return DependencyCache(S3CacheStore(inp.cache), Path.home())
+
+
 def _spawn(job: Callable[[], None]) -> None:
     threading.Thread(target=job, daemon=True).start()
 
 
 @app.entrypoint
 def invoke(payload: dict) -> dict:
-    return handle_invocation(payload, _sink(), app.add_async_task, app.complete_async_task, _runner, _spawn)
+    return handle_invocation(payload, _sink(), app.add_async_task, app.complete_async_task, _runner, _spawn,
+                             cache_factory=_cache)
 
 
 if __name__ == "__main__":

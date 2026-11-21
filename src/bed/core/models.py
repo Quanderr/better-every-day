@@ -44,6 +44,7 @@ class RepoConfig(Model):
     prompt: str = ""
     categories: list[Category] = ALL_CATEGORIES
     limits: Limits = Limits()
+    cache: bool = True
 
 
 class ConnectorConfig(Model):
@@ -133,6 +134,14 @@ class ExplorationMemory(Model):
     complete: bool = False
 
 
+class CacheGrant(Model):
+    bucket: str
+    key: str
+    access_key_id: str
+    secret_access_key: str
+    session_token: str
+
+
 class WorkerInput(Model):
     run_id: str
     repo: RepoConfig
@@ -149,6 +158,7 @@ class WorkerInput(Model):
     exploration: ExplorationMemory | None = None
     allowance_usd: float | None = None
     budget_day: str | None = None
+    cache: CacheGrant | None = None
 
 
 RunStatus = Literal[

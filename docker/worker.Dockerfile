@@ -4,7 +4,7 @@ ARG MISE_VERSION=v2026.10.19
 ARG MISE_SHA256=4a4ca53b28e5433c527f4f73fac1f98f992a17cf32ca136a58e2e375f790f627
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends git ca-certificates bash build-essential curl \
+    && apt-get install -y --no-install-recommends git ca-certificates bash build-essential curl zstd \
     && rm -rf /var/lib/apt/lists/*
 
 RUN curl -fsSL -o /usr/local/bin/mise \

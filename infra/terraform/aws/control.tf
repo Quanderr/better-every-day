@@ -9,12 +9,14 @@ resource "aws_ecr_repository" "control" {
 
 locals {
   control_env = {
-    BED_TABLE         = aws_dynamodb_table.state.name
-    BED_CONFIG_BUCKET = aws_s3_bucket.config.id
-    BED_CONFIG_KEY    = aws_s3_object.config.key
-    BED_RUNTIME_ARN   = aws_bedrockagentcore_agent_runtime.worker.agent_runtime_arn
-    BED_MEMORY_ID     = aws_bedrockagentcore_memory.exploration.id
-    BED_CONFIG_REV    = filemd5(var.config_path)
+    BED_TABLE          = aws_dynamodb_table.state.name
+    BED_CONFIG_BUCKET  = aws_s3_bucket.config.id
+    BED_CONFIG_KEY     = aws_s3_object.config.key
+    BED_RUNTIME_ARN    = aws_bedrockagentcore_agent_runtime.worker.agent_runtime_arn
+    BED_MEMORY_ID      = aws_bedrockagentcore_memory.exploration.id
+    BED_CONFIG_REV     = filemd5(var.config_path)
+    BED_CACHE_BUCKET   = aws_s3_bucket.cache.id
+    BED_CACHE_ROLE_ARN = aws_iam_role.cache.arn
   }
   control_functions = {
     schedule = "bed.platform.aws.handlers.schedule_handler"

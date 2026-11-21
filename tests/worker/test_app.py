@@ -139,3 +139,16 @@ def test_oversize_drops_largest_fix_first():
     assert [(r.candidate.title, r.status, len(r.changes)) for r in sent.results] == [
         ("small", "fixed", 1), ("big", "fix_failed", 0)]
     assert "too large" in sent.results[1].verify_log
+
+
+def test_job_builds_cache_from_factory(payload, tmp_path):
+    sink, jobs, built = FakeSink(), [], []
+
+    def cache_factory(inp):
+        built.append(inp.run_id)
+        return app.NoCache()
+
+    app.handle_invocation(payload, sink, Tasks().start, lambda task: None, factory, jobs.append,
+                          workdir_base=tmp_path, cache_factory=cache_factory)
+    jobs[0]()
+    assert built == ["run-1"] and len(sink.emitted) == 1

@@ -69,6 +69,11 @@ variable "bedrock_usd_per_million_tokens" {
   }
 }
 
+variable "cache_expiry_days" {
+  type    = number
+  default = 30
+}
+
 variable "extra_allowed_domains" {
   type    = list(string)
   default = []

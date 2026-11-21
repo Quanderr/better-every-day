@@ -161,3 +161,11 @@ def test_tracker_optional_per_repo():
 
     cfg = load_config(_mutate(drop)(EXAMPLE))
     assert cfg.repo("acme/web").tracker is None and cfg.repo("acme/api").tracker == "main-linear"
+
+
+def test_cache_defaults_on_and_can_be_disabled_in_defaults_or_repo():
+    assert all(r.cache for r in load_config(EXAMPLE).repos)
+    off = load_config(_mutate(lambda d: d["defaults"].update(cache=False))(EXAMPLE))
+    assert not any(r.cache for r in off.repos)
+    one = load_config(_mutate(lambda d: d["repos"][0].update(cache=False))(EXAMPLE))
+    assert [r.cache for r in one.repos] == [False, True]

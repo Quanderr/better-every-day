@@ -8,6 +8,7 @@ from bed.core.control.deps import ControlDeps
 from bed.core.control.outcomes import sync_outcomes
 from bed.core.models import (
     BLOCKING_STATUSES,
+    CacheGrant,
     ExplorationMemory,
     OutcomeDigest,
     RepoConfig,
@@ -61,7 +62,8 @@ def start_run(repo_name: str, deps: ControlDeps) -> RunRecord:
     nonce = secrets.token_hex(16)
     token = deps.vcs(repo).read_token(repo.name)
     payload = _worker_input(run_id, repo, open_prs, deps, nonce=nonce, read_token=token.token,
-                            exploration=exploration, allowance_usd=allowance, budget_day=budget_day)
+                            exploration=exploration, allowance_usd=allowance, budget_day=budget_day,
+                            cache=_cache_grant(repo, deps))
     started = record("started", nonce=nonce, read_token_id=token.revoke_id,
                      budget_reserved_usd=allowance or 0, budget_day=budget_day)
     try:
@@ -72,6 +74,16 @@ def start_run(repo_name: str, deps: ControlDeps) -> RunRecord:
         deps.store.put_run(failed)
         return failed
     return started
+
+
+def _cache_grant(repo: RepoConfig, deps: ControlDeps) -> CacheGrant | None:
+    if deps.cache is None or not repo.cache:
+        return None
+    try:
+        return deps.cache.grant(repo.name)
+    except Exception:
+        log.exception("could not grant dependency cache access for %s", repo.name)
+        return None
 
 
 def revoke_read_token(run: RunRecord, repo: RepoConfig, deps: ControlDeps) -> None:
@@ -99,7 +111,7 @@ def active_runs(repo: RepoConfig, deps: ControlDeps, now: datetime) -> list[RunR
 
 def _worker_input(run_id: str, repo: RepoConfig, open_prs: list[BotPr], deps: ControlDeps, *, nonce: str,
                   read_token: str, exploration: ExplorationMemory | None, allowance_usd: float | None,
-                  budget_day: str | None) -> WorkerInput:
+                  budget_day: str | None, cache: CacheGrant | None) -> WorkerInput:
     findings = deps.store.list_findings(repo.name)
     outcomes = sorted((f for f in findings if f.status in ("merged", "closed")),
                       key=lambda f: f.updated_at, reverse=True)[:RECENT_OUTCOMES]
@@ -123,4 +135,5 @@ def _worker_input(run_id: str, repo: RepoConfig, open_prs: list[BotPr], deps: Co
         exploration=exploration,
         allowance_usd=allowance_usd,
         budget_day=budget_day,
+        cache=cache,
     )

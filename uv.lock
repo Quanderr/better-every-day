@@ -60,7 +60,7 @@ worker = [
 
 [package.dev-dependencies]
 dev = [
-    { name = "moto", extra = ["dynamodb"] },
+    { name = "moto", extra = ["dynamodb", "s3"] },
     { name = "pytest" },
     { name = "respx" },
     { name = "ruff" },
@@ -81,7 +81,7 @@ provides-extras = ["aws", "worker"]
 
 [package.metadata.requires-dev]
 dev = [
-    { name = "moto", extras = ["dynamodb", "sqs", "secretsmanager"] },
+    { name = "moto", extras = ["dynamodb", "sqs", "secretsmanager", "s3", "sts"] },
     { name = "pytest" },
     { name = "respx" },
     { name = "ruff" },
@@ -778,6 +778,10 @@ wheels = [
 dynamodb = [
     { name = "docker" },
     { name = "py-partiql-parser" },
+]
+s3 = [
+    { name = "py-partiql-parser" },
+    { name = "pyyaml" },
 ]
 
 [[package]]
