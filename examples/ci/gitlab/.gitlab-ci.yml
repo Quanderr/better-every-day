@@ -1,4 +1,4 @@
-# Terraform plan/apply output is suppressed to protect private config in prior state.
+# Terraform plan/apply uses filtered diagnostics to protect private config in prior state.
 workflow:
   rules:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
@@ -77,7 +77,7 @@ plan-mr:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
   variables:
     AWS_ROLE_ARN: $AWS_PLAN_ROLE_ARN
-    TF_COMMAND: terraform -chdir="$TF_DIR" plan -lock=false >/dev/null 2>&1
+    TF_COMMAND: python scripts/ci/terraform.py -chdir="$TF_DIR" plan -lock=false
 
 ecr:
   stage: build
@@ -87,7 +87,7 @@ ecr:
   resource_group: production
   variables:
     AWS_ROLE_ARN: $AWS_DEPLOY_ROLE_ARN
-    TF_COMMAND: terraform -chdir="$TF_DIR" apply -auto-approve -target=aws_ecr_repository.worker -target=aws_ecr_repository.control >/dev/null 2>&1
+    TF_COMMAND: python scripts/ci/terraform.py -chdir="$TF_DIR" apply -auto-approve -target=aws_ecr_repository.worker -target=aws_ecr_repository.control
 
 images:
   stage: build
@@ -127,7 +127,7 @@ plan:
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
   variables:
     AWS_ROLE_ARN: $AWS_PLAN_ROLE_ARN
-    TF_COMMAND: terraform -chdir="$TF_DIR" plan -lock=false >/dev/null 2>&1
+    TF_COMMAND: python scripts/ci/terraform.py -chdir="$TF_DIR" plan -lock=false
 
 apply:
   stage: deploy
@@ -142,4 +142,4 @@ apply:
     name: production
   variables:
     AWS_ROLE_ARN: $AWS_DEPLOY_ROLE_ARN
-    TF_COMMAND: terraform -chdir="$TF_DIR" apply -auto-approve >/dev/null 2>&1
+    TF_COMMAND: python scripts/ci/terraform.py -chdir="$TF_DIR" apply -auto-approve

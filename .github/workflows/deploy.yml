@@ -30,7 +30,7 @@ env:
   TF_VAR_control_image_tag: ${{ github.sha }}
 
 # Terraform plan/apply output is private: old state may contain config YAML.
-# Do not print captured output or upload plans, even when a command fails.
+# Emit only filtered diagnostics; never print raw output or upload plans.
 jobs:
   check:
     runs-on: ubuntu-latest
@@ -89,7 +89,7 @@ jobs:
             -backend-config="region=${{ vars.AWS_REGION }}" \
             -backend-config="use_lockfile=true"
       - name: ensure ECR repositories
-        run: terraform -chdir="$TF_DIR" apply -auto-approve -target=aws_ecr_repository.worker -target=aws_ecr_repository.control >/dev/null 2>&1
+        run: python scripts/ci/terraform.py -chdir="$TF_DIR" apply -auto-approve -target=aws_ecr_repository.worker -target=aws_ecr_repository.control
       - name: build and push images
         run: |
           set -euo pipefail
@@ -146,7 +146,7 @@ jobs:
             -backend-config="region=${{ vars.AWS_REGION }}" \
             -backend-config="use_lockfile=true"
       - name: terraform plan
-        run: terraform -chdir="$TF_DIR" plan -lock=false >/dev/null 2>&1
+        run: python scripts/ci/terraform.py -chdir="$TF_DIR" plan -lock=false
 
   apply:
     permissions:
@@ -209,7 +209,7 @@ jobs:
           set -euo pipefail
           umask 077
           trap 'rm -f "$RUNNER_TEMP/deploy.tfplan" "$RUNNER_TEMP/plan.json" "$BED_CONFIG_PATH"' EXIT
-          terraform -chdir="$TF_DIR" plan -out="$RUNNER_TEMP/deploy.tfplan" >/dev/null 2>&1
+          python scripts/ci/terraform.py -chdir="$TF_DIR" plan -out="$RUNNER_TEMP/deploy.tfplan"
           terraform -chdir="$TF_DIR" show -json "$RUNNER_TEMP/deploy.tfplan" > "$RUNNER_TEMP/plan.json" 2>/dev/null
           python - "$RUNNER_TEMP/plan.json" <<'PY'
           import json
@@ -225,4 +225,4 @@ jobs:
               assert kind != "aws_vpc_endpoint" or after.get("vpc_endpoint_type") != "Interface", resource["address"]
           print("Cheap-mode plan verified: no Network Firewall, EC2 proxy, or paid interface endpoints")
           PY
-          terraform -chdir="$TF_DIR" apply "$RUNNER_TEMP/deploy.tfplan" >/dev/null 2>&1
+          python scripts/ci/terraform.py -chdir="$TF_DIR" apply "$RUNNER_TEMP/deploy.tfplan"
