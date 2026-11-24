@@ -117,13 +117,14 @@ resource "aws_networkfirewall_logging_configuration" "main" {
 }
 
 resource "aws_route53_resolver_firewall_domain_list" "allowed" {
-  name    = "${var.name}-allowed"
-  domains = local.dns_allowed_domains
+  name = "${var.name}-allowed"
+  # Resolver returns fully qualified names on refresh, including the trailing dot.
+  domains = [for domain in local.dns_allowed_domains : "${trimsuffix(domain, ".")}."]
 }
 
 resource "aws_route53_resolver_firewall_domain_list" "everything" {
   name    = "${var.name}-everything"
-  domains = ["*"]
+  domains = ["*."]
 }
 
 resource "aws_route53_resolver_firewall_rule_group" "worker" {
