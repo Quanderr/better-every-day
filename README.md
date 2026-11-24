@@ -238,14 +238,14 @@ Configuration changes also refresh the Lambda environment so warm processes read
 
 ### CI/CD
 
-Copy-ready pipelines: `examples/ci/github/deploy.yml` (copy to `.github/workflows/deploy.yml`) and `examples/ci/gitlab/.gitlab-ci.yml` (copy to the repo root). Both do the same:
+Copy-ready pipelines: `examples/ci/github/deploy.yml` (copy to `.github/workflows/deploy.yml`) and `examples/ci/gitlab/.gitlab-ci.yml` (copy to the repo root). The example pipelines run these jobs:
 
 | Trigger                    | Jobs                                                                                                                                                                                                                    |
 | -------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Pull/merge request         | lint, tests, `bed validate`, `terraform fmt -check`, then a read-only `terraform plan`                                                                                                                                  |
-| Push to the default branch | the same checks, then create the ECR repositories (targeted apply), build and push both arm64 images tagged with the commit SHA (skipped when that tag already exists), save a plan, and apply it after manual approval |
+| Pull/merge request         | lint, tests, `bed validate`, `terraform fmt -check`, with a read-only `terraform plan` on GitLab only                                                                                                                                  |
+| Push to the default branch | the same checks, then create the ECR repositories (targeted apply), build and push both arm64 images tagged with the commit SHA (skipped when that tag already exists), preview changes, then apply after the configured approval |
 
-The GitHub workflow pins every action to a commit SHA: `actions/checkout` v4, `astral-sh/setup-uv` v6, `hashicorp/setup-terraform` v3, `aws-actions/configure-aws-credentials` v4, `actions/upload-artifact` v4 and `actions/download-artifact` v4. Update them with Dependabot or Renovate rather than switching back to tags. Only the jobs that assume an AWS role get `id-token: write`.
+The GitHub workflow pins every action to a commit SHA: `actions/checkout` v4, `astral-sh/setup-uv` v6, `hashicorp/setup-terraform` v3, `aws-actions/configure-aws-credentials` v4. Update them with Dependabot or Renovate rather than switching back to tags. Only the jobs that assume an AWS role get `id-token: write`.
 
 AWS access uses OIDC: no access keys are stored in CI. Terraform state goes to S3 with S3-native locking (Terraform >= 1.10); the pipelines write `infra/terraform/aws/backend.tf` with an empty `s3` backend unless you committed one. Preview plans run with `-lock=false` under the read-only role. Apply creates a fresh plan after the environment approval, so changes since the preview are included.
 
@@ -260,13 +260,13 @@ The GitLab pipeline pins its tools as well: the Python and Docker images by dige
 1. An S3 bucket for state, versioned, with public access blocked.
 2. The connector secrets from Secrets.
 3. An IAM OIDC identity provider: `token.actions.githubusercontent.com` (GitHub) or `gitlab.com` / your GitLab host (GitLab), audience `sts.amazonaws.com`.
-4. A **plan role** with the policy in `examples/ci/aws/plan-role-policy.json`. Replace `STATE_BUCKET` with your state bucket and `better-every-day` with your `name` if you changed it. It allows only the Describe/List/Get calls Terraform needs to refresh this stack, plus reading the state and the config object; it deliberately cannot read DynamoDB items, SQS messages, log events, secrets or any other S3 object. If a plan fails with `AccessDenied` after a provider upgrade, add the single action named in the error. Do not use `ReadOnlyAccess`: pull and merge request plans run the branch's own code with this role (Terraform's `external` data source runs `bed validate` from the checkout, and a branch can add any data source), so anyone who can push a branch can use whatever the role can read. With this policy that is the stack's metadata and the Terraform state.
-5. A **deploy role** that can create everything in `infra/terraform/aws` (simplest: `AdministratorAccess`; scope it down once it works) plus read and write on the state bucket.
+4. A **plan role** with the policy in `examples/ci/aws/plan-role-policy.json`. Replace `STATE_BUCKET` with your state bucket and `better-every-day` with your `name` if you changed it. It allows only the Describe/List/Get calls Terraform needs to refresh this stack, plus reading the state and the config object; it deliberately cannot read DynamoDB items, SQS messages, log events, secrets or any other S3 object. If a plan fails with `AccessDenied` after a provider upgrade, add the single action named in the error. Do not use `ReadOnlyAccess`: GitLab merge request plans run the branch's own code with this role (Terraform's `external` data source runs `bed validate` from the checkout, and a branch can add any data source), so anyone who can push a branch can use whatever the role can read. With this policy that is the stack's metadata and the Terraform state.
+5. A **deploy role** scoped to the resources managed by `infra/terraform/aws` and the required state bucket operations.
 6. Trust policies, with `Federated` set to the provider from step 3 and `"StringEquals": {"<provider>:aud": "sts.amazonaws.com"}`, and these `sub` conditions (`StringLike`):
 
 |                                                    | Plan role                                                                     | Deploy role                                                                             |
 | -------------------------------------------------- | ----------------------------------------------------------------------------- | --------------------------------------------------------------------------------------- |
-| GitHub (`token.actions.githubusercontent.com:sub`) | `repo:<owner>/<repo>:pull_request`, `repo:<owner>/<repo>:ref:refs/heads/main` | `repo:<owner>/<repo>:ref:refs/heads/main`, `repo:<owner>/<repo>:environment:production` |
+| GitHub (`token.actions.githubusercontent.com:sub`) | `repo:<owner>/<repo>:ref:refs/heads/main` | `repo:<owner>/<repo>:ref:refs/heads/main`, `repo:<owner>/<repo>:environment:production` |
 | GitLab (`gitlab.com:sub`)                          | `project_path:<group>/<project>:ref_type:branch:ref:*`                        | `project_path:<group>/<project>:ref_type:branch:ref:main`                               |
 
 On GitHub:

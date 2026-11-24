@@ -15,6 +15,8 @@ concurrency:
 
 env:
   AWS_REGION: ${{ vars.AWS_REGION }}
+  TF_STATE_BUCKET: ${{ vars.TF_STATE_BUCKET }}
+  TF_STATE_KEY: ${{ vars.TF_STATE_KEY || 'better-every-day/terraform.tfstate' }}
   TF_DIR: infra/terraform/aws
   TF_IN_AUTOMATION: "1"
   TF_INPUT: "0"
@@ -34,6 +36,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
       - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e
         with:
           version: ${{ env.UV_VERSION }}
@@ -47,36 +51,6 @@ jobs:
       - run: uv run bed validate "$BED_CONFIG_PATH"
       - run: terraform fmt -check -recursive infra/terraform
 
-  plan-pr:
-    permissions:
-      contents: read
-      id-token: write
-    if: github.event_name == 'pull_request'
-    needs: check
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
-      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e
-        with:
-          version: ${{ env.UV_VERSION }}
-      - uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd
-        with:
-          terraform_version: ${{ env.TF_VERSION }}
-          terraform_wrapper: false
-      - uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a
-        with:
-          role-to-assume: ${{ vars.AWS_PLAN_ROLE_ARN }}
-          aws-region: ${{ vars.AWS_REGION }}
-      - name: terraform init
-        run: |
-          [ -f "$TF_DIR/backend.tf" ] || printf 'terraform {\n  backend "s3" {}\n}\n' > "$TF_DIR/backend.tf"
-          terraform -chdir="$TF_DIR" init \
-            -backend-config="bucket=${{ vars.TF_STATE_BUCKET }}" \
-            -backend-config="key=${{ vars.TF_STATE_KEY || 'better-every-day/terraform.tfstate' }}" \
-            -backend-config="region=${{ vars.AWS_REGION }}" \
-            -backend-config="use_lockfile=true"
-      - run: python scripts/ci/terraform.py -chdir="$TF_DIR" plan -lock=false
-
   images:
     permissions:
       contents: read
@@ -86,6 +60,8 @@ jobs:
     runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
       - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e
         with:
           version: ${{ env.UV_VERSION }}
@@ -101,9 +77,9 @@ jobs:
         run: |
           [ -f "$TF_DIR/backend.tf" ] || printf 'terraform {\n  backend "s3" {}\n}\n' > "$TF_DIR/backend.tf"
           terraform -chdir="$TF_DIR" init \
-            -backend-config="bucket=${{ vars.TF_STATE_BUCKET }}" \
-            -backend-config="key=${{ vars.TF_STATE_KEY || 'better-every-day/terraform.tfstate' }}" \
-            -backend-config="region=${{ vars.AWS_REGION }}" \
+            -backend-config="bucket=$TF_STATE_BUCKET" \
+            -backend-config="key=$TF_STATE_KEY" \
+            -backend-config="region=$AWS_REGION" \
             -backend-config="use_lockfile=true"
       - name: ensure ECR repositories
         run: python scripts/ci/terraform.py -chdir="$TF_DIR" apply -auto-approve -target=aws_ecr_repository.worker -target=aws_ecr_repository.control
@@ -132,6 +108,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
       - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e
         with:
           version: ${{ env.UV_VERSION }}
@@ -147,9 +125,9 @@ jobs:
         run: |
           [ -f "$TF_DIR/backend.tf" ] || printf 'terraform {\n  backend "s3" {}\n}\n' > "$TF_DIR/backend.tf"
           terraform -chdir="$TF_DIR" init \
-            -backend-config="bucket=${{ vars.TF_STATE_BUCKET }}" \
-            -backend-config="key=${{ vars.TF_STATE_KEY || 'better-every-day/terraform.tfstate' }}" \
-            -backend-config="region=${{ vars.AWS_REGION }}" \
+            -backend-config="bucket=$TF_STATE_BUCKET" \
+            -backend-config="key=$TF_STATE_KEY" \
+            -backend-config="region=$AWS_REGION" \
             -backend-config="use_lockfile=true"
       - name: terraform plan
         run: python scripts/ci/terraform.py -chdir="$TF_DIR" plan -lock=false
@@ -163,6 +141,8 @@ jobs:
     environment: production
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
       - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e
         with:
           version: ${{ env.UV_VERSION }}
@@ -178,9 +158,9 @@ jobs:
         run: |
           [ -f "$TF_DIR/backend.tf" ] || printf 'terraform {\n  backend "s3" {}\n}\n' > "$TF_DIR/backend.tf"
           terraform -chdir="$TF_DIR" init \
-            -backend-config="bucket=${{ vars.TF_STATE_BUCKET }}" \
-            -backend-config="key=${{ vars.TF_STATE_KEY || 'better-every-day/terraform.tfstate' }}" \
-            -backend-config="region=${{ vars.AWS_REGION }}" \
+            -backend-config="bucket=$TF_STATE_BUCKET" \
+            -backend-config="key=$TF_STATE_KEY" \
+            -backend-config="region=$AWS_REGION" \
             -backend-config="use_lockfile=true"
       # Re-plan after approval; never transfer a plaintext plan as an artifact.
       - run: python scripts/ci/terraform.py -chdir="$TF_DIR" apply -auto-approve
